@@ -1,0 +1,1 @@
+./text usatoday_facebook_statuses.csv 100
