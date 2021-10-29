@@ -87,8 +87,8 @@ int64_t UploadUniqueId(
   }
   std::string post_id_str = machine_id + timestamp_hex + counter_hex;
   int64_t post_id = stoul(post_id_str, nullptr, 16) & 0x7FFFFFFFFFFFFFFF;
-  cout << "The post_id of the request "
-      << req_id << " is " << post_id<<endl;
+  //cout << "The post_id of the request "
+  //    << req_id << " is " << post_id<<endl;
 	  
 	  return post_id;
 	  
