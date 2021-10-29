@@ -1,5 +1,3 @@
-
-
 #include"uniqueID.h"
 #include <fstream>
 #include <unordered_map>
@@ -19,6 +17,8 @@ string post_string;
 #define USER_NUM 10
 #define newPost_API_RATIO 90
 
+ std::ofstream post_storage;
+ 
 void newPost(int userID, string post)
 {
      int64_t postID =  UploadUniqueId(userID);
@@ -34,8 +34,11 @@ void newPost(int userID, string post)
 	_newpost.post_id=postID;
 	_newpost.post_string=post;
 	
-	//post_memcached[userID]=_newpost;
 	post_memcached.insert(make_pair(userID, _newpost));
+	
+	//save to storage
+	post_storage<<userID<<","<<postID<<","<<post<<endl;
+
 
 }
 
@@ -78,7 +81,8 @@ int main(int argc, char *argv[]) {
 	std::string postdir(argv[1]);
 	num_lines = atoi(argv[2]);
 
-  
+   post_storage.open("post_storage.txt");
+   
    postfile.open(argv[1],ios::in); 
    if (postfile.is_open()){  
       string tp;
@@ -110,6 +114,8 @@ int main(int argc, char *argv[]) {
       }
       postfile.close(); 
    }
+
+    post_storage.close();
 
 	return 0;
 }
