@@ -1,7 +1,7 @@
 TARGET := shortURL
 
 $(TARGET): shortURL.cpp
-	g++ -std=c++11 -o $@ $^
+	g++ -fopenmp -std=c++11 -o $@ $^
 
 run: $(TARGET)
 	./$(TARGET)

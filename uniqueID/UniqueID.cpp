@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <omp.h>
 using namespace std;
 
 
@@ -58,8 +59,7 @@ int64_t UploadUniqueId(
 	) 
 	{
 
-  int64_t timestamp = duration_cast<milliseconds>(
-      system_clock::now().time_since_epoch()).count() - CUSTOM_EPOCH;
+  int64_t timestamp = time(NULL);
   //
   int idx = GetCounter(timestamp);
 
@@ -177,11 +177,13 @@ int main(int argc, char *argv[]) {
 	exit(EXIT_FAILURE);
   }
   cout<<"machine_id: "<<machine_id<<endl;
-  
-  while(num < ids) {
-	  UploadUniqueId(num);
-	  num++;
+  omp_set_num_threads(32);
+//  #pragma omp parallel for
+  for (size_t i = 0; i < ids; i++) {
+   
+	  UploadUniqueId(i);
+	  // num++;
   }
-  
+  cout<<"DONE\n";
   return 0;
 }

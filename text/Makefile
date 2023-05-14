@@ -1,7 +1,7 @@
 TARGET := text
 
 $(TARGET): text.cpp
-	g++ -std=c++11 -o $@ $^
+	g++ -fopenmp -g -std=c++17 -o $@ $^
 
 run: $(TARGET)
 	./$(TARGET)
