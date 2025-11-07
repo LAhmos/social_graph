@@ -152,6 +152,13 @@ int main() {
     // First batch: all new users should succeed
     // ------------------------------------------------------------------
     std::cout << "\n=== First insertion batch ===\n";
+    
+    // Timing arrays for first newUser_batch
+    std::vector<int64_t> lane_start_1(N);
+    std::vector<int64_t> lane_end_1(N);
+    int64_t global_start_1 = 0;
+    
+    auto start_1 = std::chrono::high_resolution_clock::now();
     ispc::newUser_batch(N,
                         (uint8_t*)machine_id_cstr,
                         machine_len,
@@ -161,8 +168,15 @@ int main() {
                         (uint8_t*)pw_buf,
                         (uint8_t*)bd_buf,
                         users,
-                        map);
-                            std::cout << "Total entries: " << map.count << "\n\n";
+                        map,
+                        lane_start_1.data(),
+                        lane_end_1.data(),
+                        global_start_1);
+    auto end_1 = std::chrono::high_resolution_clock::now();
+    
+    auto duration_1 = std::chrono::duration_cast<std::chrono::microseconds>(end_1 - start_1);
+    std::cout << "Batch completed in " << duration_1.count() << " µs\n";
+    std::cout << "Total entries: " << map.count << "\n\n";
 
     for (int i = 0; i < map.count; i++) {
         std::cout << "User " << i << ":\n"
@@ -185,6 +199,13 @@ int main() {
     }
 
     std::cout << "\n=== Second insertion batch ===\n";
+    
+    // Timing arrays for second newUser_batch
+    std::vector<int64_t> lane_start_2(N);
+    std::vector<int64_t> lane_end_2(N);
+    int64_t global_start_2 = 0;
+    
+    auto start_2 = std::chrono::high_resolution_clock::now();
     ispc::newUser_batch(N,
                         (uint8_t*)machine_id_cstr,
                         machine_len,
@@ -194,7 +215,14 @@ int main() {
                         (uint8_t*)pw_buf,
                         (uint8_t*)bd_buf,
                         users,
-                        map);
+                        map,
+                        lane_start_2.data(),
+                        lane_end_2.data(),
+                        global_start_2);
+    auto end_2 = std::chrono::high_resolution_clock::now();
+    
+    auto duration_2 = std::chrono::duration_cast<std::chrono::microseconds>(end_2 - start_2);
+    std::cout << "Batch completed in " << duration_2.count() << " µs\n";
 
     // ------------------------------------------------------------------
     // Print final contents of map
@@ -232,12 +260,25 @@ int main() {
     }
 
     std::cout << "\n=== Login attempts ===\n";
+    
+    // Timing arrays for login_batch
+    std::vector<int64_t> lane_start_login(4);
+    std::vector<int64_t> lane_end_login(4);
+    int64_t global_start_login = 0;
+    
+    auto start_login = std::chrono::high_resolution_clock::now();
     ispc::login_batch(map,
                       (uint8_t*)login_un_buf,
                       (uint8_t*)login_pw_buf,
                       4,
-                      
-                      results);
+                      results,
+                      lane_start_login.data(),
+                      lane_end_login.data(),
+                      global_start_login);
+    auto end_login = std::chrono::high_resolution_clock::now();
+    
+    auto duration_login = std::chrono::duration_cast<std::chrono::microseconds>(end_login - start_login);
+    std::cout << "Login batch completed in " << duration_login.count() << " µs\n";
 
     // ------------------------------------------------------------------
     // Print login results
@@ -245,6 +286,74 @@ int main() {
     for (int i = 0; i < 4; i++) {
         std::cout << "Login " << test_usernames[i] << " → "
                   << (results[i] ? "✅ success" : "❌ failed") << std::endl;
+    }
+
+    // ------------------------------------------------------------------
+    // TIMING ANALYSIS - First newUser_batch
+    // ------------------------------------------------------------------
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║       TIMING ANALYSIS - First newUser_batch (N=" << N << ")              ║\n";
+    std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    std::cout << "Per-Lane Timing (cycles):\n";
+    std::cout << "Lane | Queueing Delay | Execution Time | Total Latency\n";
+    std::cout << "-----+----------------+----------------+--------------\n";
+    
+    for (int i = 0; i < N; i++) {
+        int64_t queue_delay = lane_start_1[i] - global_start_1;
+        int64_t exec_time = lane_end_1[i] - lane_start_1[i];
+        int64_t total_latency = lane_end_1[i] - global_start_1;
+        
+        std::cout << std::setw(4) << i << " | "
+                  << std::setw(14) << queue_delay << " | "
+                  << std::setw(14) << exec_time << " | "
+                  << std::setw(12) << total_latency << "\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // TIMING ANALYSIS - Second newUser_batch
+    // ------------------------------------------------------------------
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║       TIMING ANALYSIS - Second newUser_batch (N=" << N << ")             ║\n";
+    std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    std::cout << "Per-Lane Timing (cycles):\n";
+    std::cout << "Lane | Queueing Delay | Execution Time | Total Latency\n";
+    std::cout << "-----+----------------+----------------+--------------\n";
+    
+    for (int i = 0; i < N; i++) {
+        int64_t queue_delay = lane_start_2[i] - global_start_2;
+        int64_t exec_time = lane_end_2[i] - lane_start_2[i];
+        int64_t total_latency = lane_end_2[i] - global_start_2;
+        
+        std::cout << std::setw(4) << i << " | "
+                  << std::setw(14) << queue_delay << " | "
+                  << std::setw(14) << exec_time << " | "
+                  << std::setw(12) << total_latency << "\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // TIMING ANALYSIS - login_batch
+    // ------------------------------------------------------------------
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║       TIMING ANALYSIS - login_batch (N=4)                        ║\n";
+    std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    std::cout << "Per-Lane Timing (cycles):\n";
+    std::cout << "Lane | Username    | Result | Queue Delay | Exec Time  | Total Latency\n";
+    std::cout << "-----+-------------+--------+-------------+------------+--------------\n";
+    
+    for (int i = 0; i < 4; i++) {
+        int64_t queue_delay = lane_start_login[i] - global_start_login;
+        int64_t exec_time = lane_end_login[i] - lane_start_login[i];
+        int64_t total_latency = lane_end_login[i] - global_start_login;
+        
+        std::cout << std::setw(4) << i << " | "
+                  << std::setw(11) << test_usernames[i] << " | "
+                  << (results[i] ? "✅ OK " : "❌ FAIL") << " | "
+                  << std::setw(11) << queue_delay << " | "
+                  << std::setw(10) << exec_time << " | "
+                  << std::setw(12) << total_latency << "\n";
     }
 
     std::cout << "\nDone.\n";

@@ -253,9 +253,18 @@ export void login_batch(
     uniform const uint8 usernames[],
     uniform const uint8 passwords[],
     uniform int N,
-    uniform int login_results[])
+    uniform int login_results[],
+    uniform int64 lane_start_times[],  // [N] - output
+    uniform int64 lane_end_times[],    // [N] - output
+    uniform int64 &global_start_time)  // output
 {
+    // Capture global start - all requests arrive at this time
+    global_start_time = clock();
+    
     foreach (i = 0 ... N) {
+        // Record when this lane actually starts
+        int64 actual_start_time = clock();
+        
         uniform int stride = 32;
         uint8* uname = &usernames[i * stride];
         uint8* pass  = &passwords[i * stride];
@@ -267,6 +276,11 @@ export void login_batch(
             
             print("ERROR: username not found → %\n", uname);
             login_results[i] = 0;
+            
+            // Record timing even for failed attempts
+            int64 end_time = clock();
+            lane_start_times[i] = actual_start_time;
+            lane_end_times[i] = end_time;
             continue;
         }
         print("Username % found at index %\n", uname, idx);
@@ -311,6 +325,11 @@ hash256_hex_placeholder(
                 print("ERROR: password is not correct for %\n", uname);
             login_results[i] = 0;
         }
+        
+        // Record when this lane ends
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }
 export void newUser_batch(
@@ -323,9 +342,18 @@ export void newUser_batch(
     uniform uint8 passwords[],
     uniform uint8 dates_birth[],
     uniform User users[],
-    uniform UserMap &map)
+    uniform UserMap &map,
+    uniform int64 lane_start_times[],  // [N] - output
+    uniform int64 lane_end_times[],    // [N] - output
+    uniform int64 &global_start_time)  // output
 {
+    // Capture global start - all requests arrive at this time
+    global_start_time = clock();
+    
     foreach (i = 0 ... N) {
+        // Record when this lane actually starts
+        int64 actual_start_time = clock();
+        
         varying int64 uid = generate_unique_id(machine_id, machine_len,i);
         users[i].user_id = uid;
         uniform int stride = 32;
@@ -358,7 +386,10 @@ export void newUser_batch(
             print("ERROR: username % already exists\n", users[i].username[0]);
     }
 
-
+        // Record when this lane ends
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
 
         // Store ID result (e.g., truncate to 32-bit or keep full 64-bit)
         //user_ids_out[i] = (uniform int)extract(uid, 0);

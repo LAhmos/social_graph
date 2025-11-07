@@ -16,7 +16,7 @@ string data_birth;
 };
 
 unordered_map<string, user> user_memcached;
- std::ofstream user_storage;
+std::ofstream user_storage;
  
 #define newUser_API_RATIO 10
 
