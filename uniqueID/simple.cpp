@@ -114,16 +114,109 @@ int main() {
 
     const int N = 48;
     uint8_t ids[N][32];
-        std::cout << "Base address of ids: " << static_cast<void*>(ids) << "\n\n";
+    std::cout << "Base address of ids: " << static_cast<void*>(ids) << "\n\n";
 
     for (int i = 0; i < N; i++) {
         std::cout << "Row " << i << " address: "
                   << static_cast<void*>(ids[i]) << '\n';
     }
 
+    // Timing arrays
+    std::vector<int64_t> lane_start_times(N);
+    std::vector<int64_t> lane_end_times(N);
+    int64_t global_start_time = 0;
 
-    ispc::UploadUniqueIdBatch(( uint8_t*)machine_id_cstr, machine_len, N, ids);
+    auto start = std::chrono::high_resolution_clock::now();
+    ispc::UploadUniqueIdBatch((uint8_t*)machine_id_cstr, machine_len, N, ids,
+                              lane_start_times.data(),
+                              lane_end_times.data(),
+                              global_start_time);
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    std::cout << "\nBatch completed in " << duration.count() << " µs\n";
+    std::cout << "Throughput: " << (N * 1000000.0 / duration.count()) << " IDs/sec\n\n";
 
     for (int i = 0; i < N; i++)
         printf("Lane %d → %s\n", i, ids[i]);
+    
+    // ------------------------------------------------------------------
+    // TIMING ANALYSIS
+    // ------------------------------------------------------------------
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║       TIMING ANALYSIS - UploadUniqueIdBatch (N=" << N << ")            ║\n";
+    std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    // Calculate statistics per SIMD group (8 lanes per group)
+    const int SIMD_WIDTH = 8;
+    int num_groups = (N + SIMD_WIDTH - 1) / SIMD_WIDTH;
+    
+    std::cout << "Per-SIMD-Group Statistics (8 lanes per group):\n";
+    std::cout << "Group | Avg Queue Delay | Avg Exec Time | Avg Total Latency\n";
+    std::cout << "------+-----------------+---------------+------------------\n";
+    
+    for (int group = 0; group < num_groups; group++) {
+        int64_t total_queue = 0;
+        int64_t total_exec = 0;
+        int64_t total_latency = 0;
+        int lanes_in_group = std::min(SIMD_WIDTH, N - group * SIMD_WIDTH);
+        
+        for (int lane = 0; lane < lanes_in_group; lane++) {
+            int idx = group * SIMD_WIDTH + lane;
+            int64_t queue_delay = lane_start_times[idx] - global_start_time;
+            int64_t exec_time = lane_end_times[idx] - lane_start_times[idx];
+            int64_t latency = lane_end_times[idx] - global_start_time;
+            
+            total_queue += queue_delay;
+            total_exec += exec_time;
+            total_latency += latency;
+        }
+        
+        std::cout << std::setw(5) << group << " | "
+                  << std::setw(15) << (total_queue / lanes_in_group) << " | "
+                  << std::setw(13) << (total_exec / lanes_in_group) << " | "
+                  << std::setw(16) << (total_latency / lanes_in_group) << "\n";
+    }
+    
+    // Detailed per-lane timing (showing first 16 lanes as sample)
+    std::cout << "\nDetailed Per-Lane Timing (first 16 lanes, cycles):\n";
+    std::cout << "Lane | Queueing Delay | Execution Time | Total Latency\n";
+    std::cout << "-----+----------------+----------------+--------------\n";
+    
+    for (int i = 0; i < std::min(16, N); i++) {
+        int64_t queue_delay = lane_start_times[i] - global_start_time;
+        int64_t exec_time = lane_end_times[i] - lane_start_times[i];
+        int64_t total_latency = lane_end_times[i] - global_start_time;
+        
+        std::cout << std::setw(4) << i << " | "
+                  << std::setw(14) << queue_delay << " | "
+                  << std::setw(14) << exec_time << " | "
+                  << std::setw(12) << total_latency << "\n";
+    }
+    
+    // Cache warming analysis
+    if (num_groups >= 2) {
+        int64_t group0_avg = 0, group1_avg = 0;
+        for (int i = 0; i < SIMD_WIDTH && i < N; i++) {
+            group0_avg += (lane_end_times[i] - lane_start_times[i]);
+        }
+        group0_avg /= std::min(SIMD_WIDTH, N);
+        
+        if (N > SIMD_WIDTH) {
+            int lanes_in_group1 = std::min(SIMD_WIDTH, N - SIMD_WIDTH);
+            for (int i = 0; i < lanes_in_group1; i++) {
+                group1_avg += (lane_end_times[SIMD_WIDTH + i] - lane_start_times[SIMD_WIDTH + i]);
+            }
+            group1_avg /= lanes_in_group1;
+            
+            std::cout << "\n🔥 Cache Warming Analysis:\n";
+            std::cout << "   Group 0 avg execution: " << group0_avg << " cycles (cold cache)\n";
+            std::cout << "   Group 1 avg execution: " << group1_avg << " cycles (warm cache)\n";
+            double speedup = (double)group0_avg / group1_avg;
+            std::cout << "   Speedup after warmup: " << std::fixed << std::setprecision(2) 
+                      << speedup << "x\n";
+        }
+    }
+    
+    return 0;
 }

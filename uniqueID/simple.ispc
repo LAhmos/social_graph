@@ -4,13 +4,23 @@
 export void UploadUniqueIdBatch(uniform uint8 machine_id[],  // e.g., "gpu01"
                                 uniform int machine_len,
                                 uniform int N,
-                                uniform uint8 out_buf[][32]) {
+                                uniform uint8 out_buf[][32],
+                                uniform int64 lane_start_times[],  // [N] - output
+                                uniform int64 lane_end_times[],    // [N] - output
+                                uniform int64 &global_start_time)  // output
+{
+    // Capture global start - all requests arrive at this time
+    global_start_time = clock();
+    
     foreach (i = 0 ... N) {
+        // Record when this lane actually starts
+        int64 actual_start_time = clock();
+        
         //----------------------------------------------------------------------
         // Generate pseudo-timestamp and lane counter
         //----------------------------------------------------------------------
-        varying int64 timestamp = (int64)clock() + (varying int64)programIndex;
-        varying int   counter   = programIndex;
+        varying int64 timestamp = (int64)clock() + (varying int64)i;
+        varying int   counter   = i;
         //print("lane % timestamp % counter %\n", programIndex, timestamp, counter);
 
         //----------------------------------------------------------------------
@@ -91,5 +101,10 @@ print("lane % dst %\n", i, (varying uint8*)dst);
         }
 
         *((varying uint8*)dst) = 0;
+        
+        // Record when this lane ends
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }
