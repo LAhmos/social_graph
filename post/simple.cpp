@@ -49,42 +49,155 @@ int main() {
     map.next_slot = 0;
 
     // ---------------------------------------------------------
-    // 3️⃣  Prepare users and post texts
+    // 3️⃣  Prepare MORE users and post texts for better testing
     // ---------------------------------------------------------
-    int user_ids[N] = {1, 2, 1, 3, 2};
-    const char* texts[N] = {
-        "Hello world from user1",
-        "GPU programming is cool",
-        "Another post by user1",
-        "ISPC parallelism rocks!",
-        "Final post from user2"
-    };
+    constexpr int LARGE_N = 128;  // Use 64 to test 8 SIMD groups (8 lanes each)
+    int user_ids_large[LARGE_N];
+    const char* texts_large[LARGE_N];
+    
+    // Generate uniform posts
+    std::string post_template = "Post number XXX with similar length for testing purposes here";
+    std::vector<std::string> post_strings(LARGE_N);
+    
+    for (int i = 0; i < LARGE_N; i++) {
+        user_ids_large[i] = i + 1;
+        std::stringstream ss;
+        ss << "Post number " << std::setw(3) << std::setfill('0') << (i+1) 
+           << " with similar length for testing purposes here";
+        post_strings[i] = ss.str();
+        texts_large[i] = post_strings[i].c_str();
+    }
 
     // Flatten post texts
-    std::vector<uint8_t> post_texts(N * MAX_POST_LEN);
-    for (int i = 0; i < N; i++)
-        strncpy((char*)&post_texts[i * MAX_POST_LEN], texts[i], MAX_POST_LEN);
+    std::vector<uint8_t> post_texts_large(LARGE_N * MAX_POST_LEN);
+    for (int i = 0; i < LARGE_N; i++)
+        strncpy((char*)&post_texts_large[i * MAX_POST_LEN], texts_large[i], MAX_POST_LEN);
 
     // post_ids can be left empty — kernel will generate unique IDs internally
-    std::vector<int64_t> post_ids(N, 0);
+    std::vector<int64_t> post_ids_large(LARGE_N, 0);
+    
+    // Arrays to capture per-lane timing
+    std::vector<int64_t> insert_lane_start(LARGE_N, 0);
+    std::vector<int64_t> insert_lane_end(LARGE_N, 0);
+    int64_t global_start_insert = 0;
 
     // ---------------------------------------------------------
-    // 4️⃣  Launch ISPC kernel
+    // 4️⃣  Launch ISPC kernel with timing
     // ---------------------------------------------------------
     std::cout << "\n=== Creating Posts ===\n";
+    
+    auto start_insert = std::chrono::high_resolution_clock::now();
+    
     ispc::newPost_batch(map,
                         machine_id,
                         machine_len,
-                        user_ids,
-                        post_texts.data(),
-                        post_ids.data(),
-                        N);
+                        user_ids_large,
+                        post_texts_large.data(),
+                        post_ids_large.data(),
+                        LARGE_N,
+                        insert_lane_start.data(),
+                        insert_lane_end.data(),
+                        global_start_insert);
+    
+    auto end_insert = std::chrono::high_resolution_clock::now();
+    auto duration_insert_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_insert - start_insert);
+    auto duration_insert_us = std::chrono::duration_cast<std::chrono::microseconds>(end_insert - start_insert);
+    
+    double throughput_insert = (LARGE_N * 1000000000.0) / duration_insert_ns.count();  // posts per second
+    
+    std::cout << "\n--- newPost_batch Performance ---\n";
+    std::cout << "Posts created: " << LARGE_N << "\n";
+    std::cout << "Execution time: " << duration_insert_us.count() << " μs (" 
+              << duration_insert_ns.count() << " ns)\n";
+    std::cout << "Throughput: " << std::fixed << std::setprecision(2) 
+              << throughput_insert << " posts/sec\n";
+    std::cout << "Average latency: " << std::fixed << std::setprecision(3)
+              << (duration_insert_ns.count() / (double)LARGE_N) << " ns/post\n";
+    
+    // Analyze per-lane timing
+    std::cout << "\n--- Per-Lane Start Times and Queueing Delays (CPU clock cycles) ---\n";
+    std::cout << "Global start (all requests arrive): " << global_start_insert << "\n\n";
+    
+    // Show summary by SIMD group
+    std::cout << "Summary by SIMD group (8 lanes each):\n";
+    for (int group = 0; group < LARGE_N / 8; group++) {
+        int64_t group_queue_delay = insert_lane_start[group * 8] - global_start_insert;
+        int64_t group_exec_sum = 0;
+        for (int i = 0; i < 8; i++) {
+            group_exec_sum += (insert_lane_end[group * 8 + i] - insert_lane_start[group * 8 + i]);
+        }
+        double group_exec_avg = group_exec_sum / 8.0;
+        std::cout << "  Group " << group << " (lanes " << std::setw(2) << (group*8) << "-" << std::setw(2) << (group*8+7) << "): "
+                  << "Queue=" << std::setw(7) << group_queue_delay << " cycles, "
+                  << "Avg Exec=" << std::setw(7) << std::fixed << std::setprecision(0) << group_exec_avg << " cycles\n";
+    }
+    
+    std::cout << "\n--- Per-Lane Latency (includes queueing + execution) ---\n";
+    std::cout << "(Showing first 16 lanes and last 8 lanes)\n";
+    int64_t min_cycles = INT64_MAX, max_cycles = 0;
+    int64_t min_exec = INT64_MAX, max_exec = 0;
+    double total_cycles = 0, total_exec = 0;
+    for (int i = 0; i < LARGE_N; i++) {
+        int64_t total_latency = insert_lane_end[i] - global_start_insert;  // queue + execution
+        int64_t exec_time = insert_lane_end[i] - insert_lane_start[i];    // execution only
+        int64_t queue_delay = insert_lane_start[i] - global_start_insert;  // queueing only
+        
+        total_cycles += total_latency;
+        total_exec += exec_time;
+        min_cycles = std::min(min_cycles, total_latency);
+        max_cycles = std::max(max_cycles, total_latency);
+        min_exec = std::min(min_exec, exec_time);
+        max_exec = std::max(max_exec, exec_time);
+        
+        // Show first 16 and last 8
+        
+            std::cout << "  Lane " << std::setw(2) << i << " (user_id=" << std::setw(2) << user_ids_large[i] << "): " 
+                      << "Total=" << std::setw(7) << total_latency << " cycles"
+                      << " (Queue=" << std::setw(6) << queue_delay 
+                      << " + Exec=" << std::setw(6) << exec_time << ")\n";
+      
+    }
+    std::cout << "Min cycles: " << min_cycles << " (total latency)\n";
+    std::cout << "Max cycles: " << max_cycles << " (total latency)\n";
+    std::cout << "Avg cycles: " << std::fixed << std::setprecision(2) 
+              << (total_cycles / LARGE_N) << " (total)\n";
+    std::cout << "Avg execution: " << (total_exec / LARGE_N) << " cycles\n";
+    std::cout << "Min execution: " << min_exec << " cycles\n";
+    std::cout << "Max execution: " << max_exec << " cycles\n";
+    
+    // Calculate per-group execution times
+    std::cout << "\n--- Execution Time by SIMD Group ---\n";
+    for (int group = 0; group < LARGE_N / 8; group++) {
+        int64_t group_exec_sum = 0;
+        for (int i = 0; i < 8; i++) {
+            group_exec_sum += (insert_lane_end[group * 8 + i] - insert_lane_start[group * 8 + i]);
+        }
+        double group_exec_avg = group_exec_sum / 8.0;
+        std::cout << "  Group " << group << ": " << std::setw(7) << std::fixed << std::setprecision(0) 
+                  << group_exec_avg << " cycles";
+        if (group == 0) {
+            std::cout << " (cold start - baseline)";
+        } else {
+            double speedup = (insert_lane_end[0] - insert_lane_start[0]) / group_exec_avg;
+            std::cout << " (" << std::setprecision(2) << speedup << "x vs group 0)";
+        }
+        std::cout << "\n";
+    }
+    
+    std::cout << "\nVariation: " << (max_cycles - min_cycles) << " cycles ("
+              << std::fixed << std::setprecision(1)
+              << (100.0 * (max_cycles - min_cycles) / (total_cycles / LARGE_N)) << "% of avg)\n";
+    
+    std::cout << "\nCache Effect Analysis:\n";
+    std::cout << "- Group 0 is slowest (cold start)\n";
+    std::cout << "- Subsequent groups benefit from warmed caches\n";
+    std::cout << "- Watch for stabilization after a few groups\n";
 
     // ---------------------------------------------------------
     // 5️⃣  Print results (verify posts stored)
     // ---------------------------------------------------------
-    std::cout << "\n=== PostMap contents ===\n";
-    for (int i = 0; i < map.next_slot; i++) {
+    std::cout << "\n=== PostMap contents (showing first 5) ===\n";
+    for (int i = 0; i < std::min(5, (int)map.next_slot); i++) {
         std::cout << "[" << i << "] "
                   << "user_id=" << map.posts[i].user_id
                   << "  post_id=" << map.posts[i].post_id
@@ -93,27 +206,101 @@ int main() {
     }
 
     std::cout << "----------------------------------------\n";
-constexpr int Q = 4;  // number of users we’ll query
-    int query_user_ids[Q] = {1, 2, 3, 4};  // includes a missing one (4)
+constexpr int Q = 8;  // number of users we'll query
+    int query_user_ids[Q] = {1, 2, 3, 4, 5, 6, 7, 11};  // various users
 
     std::vector<uint8_t> out_posts(Q * MAX_RESULTS * MAX_POST_LEN);
     std::vector<int> out_counts(Q, 0);
+    
+    // Arrays to capture per-lane timing
+    std::vector<int64_t> lookup_lane_start(Q, 0);
+    std::vector<int64_t> lookup_lane_end(Q, 0);
+    int64_t global_start_lookup = 0;
 
     // ---------------------------------------------------------
-    // 7️⃣ Run lookup kernel
+    // 7️⃣ Run lookup kernel with timing
     // ---------------------------------------------------------
     std::cout << "\n=== Running getPostByUser_batch() ===\n";
+    
+    auto start_lookup = std::chrono::high_resolution_clock::now();
+    
     ispc::getPostByUser_batch(map,
                               query_user_ids,
                               Q,
                               out_posts.data(),
-                              out_counts.data());
+                              out_counts.data(),
+                              lookup_lane_start.data(),
+                              lookup_lane_end.data(),
+                              global_start_lookup);
+    
+    auto end_lookup = std::chrono::high_resolution_clock::now();
+    auto duration_lookup_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_lookup - start_lookup);
+    auto duration_lookup_us = std::chrono::duration_cast<std::chrono::microseconds>(end_lookup - start_lookup);
+    
+    // Calculate total posts retrieved
+    int total_posts_retrieved = 0;
+    for (int i = 0; i < Q; i++) {
+        total_posts_retrieved += out_counts[i];
+    }
+    
+    double throughput_lookup = (Q * 1000000000.0) / duration_lookup_ns.count();  // queries per second
+    
+    std::cout << "\n--- getPostByUser_batch Performance ---\n";
+    std::cout << "Queries executed: " << Q << "\n";
+    std::cout << "Total posts retrieved: " << total_posts_retrieved << "\n";
+    std::cout << "Execution time: " << duration_lookup_us.count() << " μs (" 
+              << duration_lookup_ns.count() << " ns)\n";
+    std::cout << "Throughput: " << std::fixed << std::setprecision(2) 
+              << throughput_lookup << " queries/sec\n";
+    std::cout << "Average latency: " << std::fixed << std::setprecision(3)
+              << (duration_lookup_ns.count() / (double)Q) << " ns/query\n";
+    
+    // Analyze per-lane timing
+    std::cout << "\n--- Per-Lane Start Times and Queueing Delays (CPU clock cycles) ---\n";
+    std::cout << "Global start (all requests arrive): " << global_start_lookup << "\n\n";
+    for (int i = 0; i < Q; i++) {
+        int64_t queue_delay = lookup_lane_start[i] - global_start_lookup;
+        std::cout << "  Lane " << i 
+                  << " - Queue delay: " << std::setw(7) << queue_delay << " cycles"
+                  << " | Actual start: " << lookup_lane_start[i] << "\n";
+    }
+    
+    std::cout << "\n--- Per-Lane Latency (includes queueing + execution) ---\n";
+    int64_t min_cycles_lookup = INT64_MAX, max_cycles_lookup = 0;
+    int64_t min_exec_lookup = INT64_MAX, max_exec_lookup = 0;
+    double total_cycles_lookup = 0, total_exec_lookup = 0;
+    for (int i = 0; i < Q; i++) {
+        int64_t total_latency = lookup_lane_end[i] - global_start_lookup;
+        int64_t exec_time = lookup_lane_end[i] - lookup_lane_start[i];
+        int64_t queue_delay = lookup_lane_start[i] - global_start_lookup;
+        
+        total_cycles_lookup += total_latency;
+        total_exec_lookup += exec_time;
+        min_cycles_lookup = std::min(min_cycles_lookup, total_latency);
+        max_cycles_lookup = std::max(max_cycles_lookup, total_latency);
+        min_exec_lookup = std::min(min_exec_lookup, exec_time);
+        max_exec_lookup = std::max(max_exec_lookup, exec_time);
+        
+        std::cout << "  Lane " << i << " (user_id=" << std::setw(2) << query_user_ids[i] 
+                  << ", found=" << out_counts[i] << " posts): " 
+                  << "Total=" << std::setw(7) << total_latency << " cycles"
+                  << " (Queue=" << std::setw(5) << queue_delay
+                  << " + Exec=" << std::setw(6) << exec_time << ")\n";
+    }
+    std::cout << "Min cycles: " << min_cycles_lookup << " (total latency)\n";
+    std::cout << "Max cycles: " << max_cycles_lookup << " (total latency)\n";
+    std::cout << "Avg cycles: " << std::fixed << std::setprecision(2) 
+              << (total_cycles_lookup / Q) << " (total)\n";
+    std::cout << "Avg execution: " << (total_exec_lookup / Q) << " cycles\n";
+    std::cout << "Variation: " << (max_cycles_lookup - min_cycles_lookup) << " cycles ("
+              << std::fixed << std::setprecision(1)
+              << (100.0 * (max_cycles_lookup - min_cycles_lookup) / (total_cycles_lookup / Q)) << "% of avg)\n";
 
     // ---------------------------------------------------------
-    // 8️⃣ Print lookup results
+    // 8️⃣ Print lookup results (abbreviated)
     // ---------------------------------------------------------
-    std::cout << "\n=== Lookup Results ===\n";
-    for (int i = 0; i < Q; i++) {
+    std::cout << "\n=== Lookup Results (showing first 3 users) ===\n";
+    for (int i = 0; i < std::min(3, Q); i++) {
         std::cout << "User " << query_user_ids[i]
                   << " → " << out_counts[i] << " posts\n";
 

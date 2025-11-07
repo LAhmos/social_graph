@@ -178,14 +178,27 @@ export void newPost_batch(uniform PostMap &map,
                           uniform const int user_ids[],
                           uniform const uint8 post_texts[], // [N * MAX_POST_LEN]
                           uniform int64 post_ids[],          // [N]
-                          uniform int N)
+                          uniform int N,
+                          uniform int64 lane_start_times[],  // [N] - output (actual execution start)
+                          uniform int64 lane_end_times[],    // [N] - output
+                          uniform int64 &global_start_time)  // output - when all requests arrived
 {
+    // Capture the global start time - all requests arrive at this time
+    global_start_time = clock();
+    
     foreach (i = 0 ... N) {
+            // Record when this lane actually starts (includes queueing delay)
+            int64 actual_start_time = clock();
+            
             int user_id = user_ids[i];
             uint8 *post_txt = &post_texts[i * MAX_POST_LEN];
             int64 post_id = generate_unique_id(machine_id, machine_len,i); // can come from UploadUniqueId()
 
         insert_post(map, user_id, post_txt, post_id);
+        
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }
 
@@ -193,9 +206,18 @@ export void getPostByUser_batch(uniform const PostMap &map,
                                 uniform  int query_user_ids[],
                                 uniform int N,
                                 uniform uint8 out_posts[],  // [N * MAX_RESULTS * MAX_POST_LEN]
-                                uniform int out_counts[])   // [N]
+                                uniform int out_counts[],   // [N]
+                                uniform int64 lane_start_times[],  // [N] - output (actual execution start)
+                                uniform int64 lane_end_times[],    // [N] - output
+                                uniform int64 &global_start_time)  // output - when all requests arrived
 {
+    // Capture the global start time - all requests arrive at this time
+    global_start_time = clock();
+    
     foreach (i = 0 ... N) {
+         // Record when this lane actually starts (includes queueing delay)
+         int64 actual_start_time = clock();
+         
          int query_id = query_user_ids[i];
          int found = 0;
 
@@ -204,7 +226,7 @@ export void getPostByUser_batch(uniform const PostMap &map,
 
         for (uniform int j = 0; j < map.next_slot; j++) {
             if (map.user_ids[j] == query_id) {
-                // copy post text to this lane’s result region
+                // copy post text to this lane's result region
                 uniform uint8 *src = &map.posts[j].post_string[0];
                 uniform uint8 *dst_post = &dst[found * MAX_POST_LEN];
 
@@ -218,7 +240,9 @@ export void getPostByUser_batch(uniform const PostMap &map,
             }
         }
 
+        int64 end_time = clock();
         out_counts[i] = found;
-        // print("lane % (user_id=%) → found % posts\n", programIndex, query_id, found);
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }
