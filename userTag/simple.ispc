@@ -88,12 +88,20 @@ export void userMention_flat_batch(
     uniform  int start_idx[],        // starting username index per post
     uniform  int num_per_post[],     // number of usernames per post
     uniform int64 postIDs[],              // post IDs per lane
-    uniform int N)
+    uniform int N,
+    uniform int64 lane_start_times[],  // [N] - output
+    uniform int64 lane_end_times[],    // [N] - output
+    uniform int64 &global_start_time)  // output
 {
+    // Capture global start - all requests arrive at this time
+    global_start_time = clock();
+    
     // ":user_id" in ASCII
     uniform uint8 suffix[8] = {58,117,115,101,114,95,105,100};
 
     foreach (i = 0 ... N) {
+        // Record when this lane actually starts
+        int64 actual_start_time = clock();
          int64 post = postIDs[i];
          int start = start_idx[i];
          int count = num_per_post[i];
@@ -118,6 +126,11 @@ export void userMention_flat_batch(
 
         
             print("Post % processed % usernames\n", post, count);
+        
+        // Record when this lane ends
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }
 
@@ -128,9 +141,17 @@ export void getMentionNotifications_batch(
     uniform int N,
     uniform int64 out_posts[],        // [N * max_posts]
     uniform int max_posts,
-    uniform int out_counts[])         // [N]
+    uniform int out_counts[],         // [N]
+    uniform int64 lane_start_times[],  // [N] - output
+    uniform int64 lane_end_times[],    // [N] - output
+    uniform int64 &global_start_time)  // output
 {
+    // Capture global start - all requests arrive at this time
+    global_start_time = clock();
+    
     foreach (i = 0 ... N) {
+        // Record when this lane actually starts
+        int64 actual_start_time = clock();
          const uint8 *uname = &usernames[i * MAX_KEY_LEN];
          int base = i * max_posts;
          int found = 0;
@@ -148,5 +169,10 @@ export void getMentionNotifications_batch(
 
         print("Lane % (username %) found % posts\n",
               i, uname, found);
+        
+        // Record when this lane ends
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }

@@ -230,12 +230,26 @@ int main() {
     // Step 2: Run insertion kernel
     // ------------------------------------------------------------------
     std::cout << "\n=== Inserting Mentions ===\n";
+    
+    // Timing arrays for insertion
+    std::vector<int64_t> lane_start_insert(N);
+    std::vector<int64_t> lane_end_insert(N);
+    int64_t global_start_insert = 0;
+    
+    auto start_insert = std::chrono::high_resolution_clock::now();
     ispc::userMention_flat_batch(notif_map,
                                  usernames_flat.data(),
                                  start_idx,
                                  num_per_post,
                                  postIDs,
-                                 N);
+                                 N,
+                                 lane_start_insert.data(),
+                                 lane_end_insert.data(),
+                                 global_start_insert);
+    auto end_insert = std::chrono::high_resolution_clock::now();
+    
+    auto duration_insert = std::chrono::duration_cast<std::chrono::microseconds>(end_insert - start_insert);
+    std::cout << "Insertion batch completed in " << duration_insert.count() << " µs\n";
 
     // Print inserted map
     std::cout << "\n=== NotificationMap contents ===\n";
@@ -261,12 +275,26 @@ int main() {
     // Step 4: Run lookup kernel
     // ------------------------------------------------------------------
     std::cout << "\n=== Running Parallel Lookups ===\n";
+    
+    // Timing arrays for lookup
+    std::vector<int64_t> lane_start_lookup(Q);
+    std::vector<int64_t> lane_end_lookup(Q);
+    int64_t global_start_lookup = 0;
+    
+    auto start_lookup = std::chrono::high_resolution_clock::now();
     ispc::getMentionNotifications_batch(notif_map,
                                         query_flat,
                                         Q,
                                         results,
                                         MAX_RESULTS,
-                                        counts);
+                                        counts,
+                                        lane_start_lookup.data(),
+                                        lane_end_lookup.data(),
+                                        global_start_lookup);
+    auto end_lookup = std::chrono::high_resolution_clock::now();
+    
+    auto duration_lookup = std::chrono::duration_cast<std::chrono::microseconds>(end_lookup - start_lookup);
+    std::cout << "Lookup batch completed in " << duration_lookup.count() << " µs\n";
 
     // ------------------------------------------------------------------
     // Step 5: Print lookup results
@@ -282,6 +310,70 @@ int main() {
         std::cout << "-----------------------------------\n";
     }
 
-    std::cout << "Done.\n";
+    // ------------------------------------------------------------------
+    // TIMING ANALYSIS - Insertion
+    // ------------------------------------------------------------------
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║       TIMING ANALYSIS - userMention_flat_batch (N=" << N << ")           ║\n";
+    std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    std::cout << "Per-Lane Timing (cycles):\n";
+    std::cout << "Lane | PostID | #Users | Queue Delay | Exec Time  | Total Latency\n";
+    std::cout << "-----+--------+--------+-------------+------------+--------------\n";
+    
+    for (int i = 0; i < N; i++) {
+        int64_t queue_delay = lane_start_insert[i] - global_start_insert;
+        int64_t exec_time = lane_end_insert[i] - lane_start_insert[i];
+        int64_t total_latency = lane_end_insert[i] - global_start_insert;
+        
+        std::cout << std::setw(4) << i << " | "
+                  << std::setw(6) << postIDs[i] << " | "
+                  << std::setw(6) << num_per_post[i] << " | "
+                  << std::setw(11) << queue_delay << " | "
+                  << std::setw(10) << exec_time << " | "
+                  << std::setw(12) << total_latency << "\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // TIMING ANALYSIS - Lookup
+    // ------------------------------------------------------------------
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║       TIMING ANALYSIS - getMentionNotifications_batch (N=" << Q << ")    ║\n";
+    std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    std::cout << "Per-Lane Timing (cycles):\n";
+    std::cout << "Lane | Username | #Found | Queue Delay | Exec Time  | Total Latency\n";
+    std::cout << "-----+----------+--------+-------------+------------+--------------\n";
+    
+    for (int i = 0; i < Q; i++) {
+        int64_t queue_delay = lane_start_lookup[i] - global_start_lookup;
+        int64_t exec_time = lane_end_lookup[i] - lane_start_lookup[i];
+        int64_t total_latency = lane_end_lookup[i] - global_start_lookup;
+        
+        std::cout << std::setw(4) << i << " | "
+                  << std::setw(8) << queries[i] << " | "
+                  << std::setw(6) << counts[i] << " | "
+                  << std::setw(11) << queue_delay << " | "
+                  << std::setw(10) << exec_time << " | "
+                  << std::setw(12) << total_latency << "\n";
+    }
+    
+    // Analyze workload impact
+    std::cout << "\n📊 Workload Analysis:\n";
+    std::cout << "   Insertion: Lanes process different #users per post\n";
+    for (int i = 0; i < N; i++) {
+        int64_t exec_time = lane_end_insert[i] - lane_start_insert[i];
+        std::cout << "      Lane " << i << " (" << num_per_post[i] 
+                  << " users): " << exec_time << " cycles\n";
+    }
+    
+    std::cout << "\n   Lookup: Different result set sizes\n";
+    for (int i = 0; i < Q; i++) {
+        int64_t exec_time = lane_end_lookup[i] - lane_start_lookup[i];
+        std::cout << "      Lane " << i << " ('" << queries[i] 
+                  << "', " << counts[i] << " posts): " << exec_time << " cycles\n";
+    }
+
+    std::cout << "\nDone.\n";
     return 0;
 }
