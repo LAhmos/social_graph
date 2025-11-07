@@ -81,8 +81,14 @@ export void concat_batch(uniform URLMap &map,
                          uniform uint8 tokens_buf[],   // all tokens flattened
                          uniform int   offsets[],      // per-lane token offset
                          uniform int   N,
-                         uniform uint8 out_buf[])      // output: N * MAX_LEN
+                         uniform uint8 out_buf[],      // output: N * MAX_LEN
+                         uniform int64 lane_start_times[],  // [N] - output
+                         uniform int64 lane_end_times[],    // [N] - output
+                         uniform int64 &global_start_time)  // output
 {
+    // Capture global start - all requests arrive at this time
+    global_start_time = clock();
+    
     uniform int host_len = ustrlen(HOSTNAME, MAX_LEN);
     if (host_len >= MAX_LEN) host_len = MAX_LEN - 1;
     uniform uint8 alphabet[62] = {
@@ -94,6 +100,8 @@ export void concat_batch(uniform URLMap &map,
 
 
     foreach (i = 0 ... N) {
+        // Record when this lane actually starts
+        int64 actual_start_time = clock();
         // per-lane start of its token
         // varying int off = offsets[i];
         // print("off %", off);
@@ -115,6 +123,11 @@ export void concat_batch(uniform URLMap &map,
                 dstp += 1;
                 if (h == 0) break;
             }
+            
+            // Record timing even for cache hits
+            int64 end_time = clock();
+            lane_start_times[i] = actual_start_time;
+            lane_end_times[i] = end_time;
             continue;
         }
 
@@ -179,6 +192,11 @@ export void concat_batch(uniform URLMap &map,
         longURL = (varying uintptr_t)(tokens_buf + i * MAX_LEN);
         dstp = (varying uintptr_t)(out_buf + i * MAX_LEN);
         insert_into_map(map, ( uint8*)longURL, ( uint8*)dstp);
+        
+        // Record when this lane ends
+        int64 end_time = clock();
+        lane_start_times[i] = actual_start_time;
+        lane_end_times[i] = end_time;
     }
 }
 
