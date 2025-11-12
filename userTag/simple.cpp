@@ -374,6 +374,95 @@ int main() {
                   << "', " << counts[i] << " posts): " << exec_time << " cycles\n";
     }
 
+    // ------------------------------------------------------------------
+    // DUMP TIMING DATA TO CSV
+    // ------------------------------------------------------------------
+    FILE* csv_file = fopen("timing_stats.csv", "w");
+    if (csv_file) {
+        // Write header
+        fprintf(csv_file, "Operation,Lane,QueueingDelay,ExecutionTime,TotalLatency\n");
+        
+        // Write insertion timing data
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_insert[i] - global_start_insert;
+            int64_t exec_time = lane_end_insert[i] - lane_start_insert[i];
+            int64_t total_latency = lane_end_insert[i] - global_start_insert;
+            
+            fprintf(csv_file, "Insertion,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        // Write lookup timing data
+        for (int i = 0; i < Q; i++) {
+            int64_t queue_delay = lane_start_lookup[i] - global_start_lookup;
+            int64_t exec_time = lane_end_lookup[i] - lane_start_lookup[i];
+            int64_t total_latency = lane_end_lookup[i] - global_start_lookup;
+            
+            fprintf(csv_file, "Lookup,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        fclose(csv_file);
+        std::cout << "\n✅ Timing data exported to 'timing_stats.csv'\n";
+    } else {
+        std::cerr << "\n❌ Failed to create CSV file\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // DUMP THROUGHPUT STATS TO CSV
+    // ------------------------------------------------------------------
+    FILE* throughput_file = fopen("throughput_stats.csv", "w");
+    if (throughput_file) {
+        // Write header
+        fprintf(throughput_file, "Operation,Metric,Value,Unit\n");
+        
+        // Insertion metrics
+        double throughput_insert = (N * 1000000.0 / duration_insert.count());
+        fprintf(throughput_file, "Insertion,BatchSize,%d,posts\n", N);
+        fprintf(throughput_file, "Insertion,TotalTime,%ld,microseconds\n", duration_insert.count());
+        fprintf(throughput_file, "Insertion,Throughput,%.2f,posts/sec\n", throughput_insert);
+        fprintf(throughput_file, "Insertion,AvgLatencyPerPost,%.2f,nanoseconds\n", (duration_insert.count() * 1000.0 / N));
+        
+        // Lookup metrics
+        double throughput_lookup = (Q * 1000000.0 / duration_lookup.count());
+        fprintf(throughput_file, "Lookup,BatchSize,%d,queries\n", Q);
+        fprintf(throughput_file, "Lookup,TotalTime,%ld,microseconds\n", duration_lookup.count());
+        fprintf(throughput_file, "Lookup,Throughput,%.2f,queries/sec\n", throughput_lookup);
+        fprintf(throughput_file, "Lookup,AvgLatencyPerQuery,%.2f,nanoseconds\n", (duration_lookup.count() * 1000.0 / Q));
+        
+        // Per-lane statistics
+        fprintf(throughput_file, "\nOperation,Lane,AvgQueueDelay,AvgExecTime,AvgTotalLatency,Unit\n");
+        
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_insert[i] - global_start_insert;
+            int64_t exec_time = lane_end_insert[i] - lane_start_insert[i];
+            int64_t latency = lane_end_insert[i] - global_start_insert;
+            fprintf(throughput_file, "Insertion,%d,%ld,%ld,%ld,cycles\n", i, queue_delay, exec_time, latency);
+        }
+        
+        for (int i = 0; i < Q; i++) {
+            int64_t queue_delay = lane_start_lookup[i] - global_start_lookup;
+            int64_t exec_time = lane_end_lookup[i] - lane_start_lookup[i];
+            int64_t latency = lane_end_lookup[i] - global_start_lookup;
+            fprintf(throughput_file, "Lookup,%d,%ld,%ld,%ld,cycles\n", i, queue_delay, exec_time, latency);
+        }
+        
+        // Workload analysis
+        fprintf(throughput_file, "\nOperation,Lane,Workload,ExecTime,Unit\n");
+        for (int i = 0; i < N; i++) {
+            int64_t exec_time = lane_end_insert[i] - lane_start_insert[i];
+            fprintf(throughput_file, "Insertion,%d,%d,%ld,cycles\n", i, num_per_post[i], exec_time);
+        }
+        
+        for (int i = 0; i < Q; i++) {
+            int64_t exec_time = lane_end_lookup[i] - lane_start_lookup[i];
+            fprintf(throughput_file, "Lookup,%d,%d,%ld,cycles\n", i, counts[i], exec_time);
+        }
+        
+        fclose(throughput_file);
+        std::cout << "✅ Throughput stats exported to 'throughput_stats.csv'\n";
+    } else {
+        std::cerr << "❌ Failed to create throughput CSV file\n";
+    }
+
     std::cout << "\nDone.\n";
     return 0;
 }

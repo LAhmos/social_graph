@@ -141,6 +141,103 @@ int main() {
         printf("Lane %d → %s\n", i, ids[i]);
     
     // ------------------------------------------------------------------
+    // DUMP TIMING DATA TO CSV
+    // ------------------------------------------------------------------
+    FILE* csv_file = fopen("timing_stats.csv", "w");
+    if (csv_file) {
+        // Write header
+        fprintf(csv_file, "Lane,QueueingDelay,ExecutionTime,TotalLatency\n");
+        
+        // Write per-lane timing data
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_times[i] - global_start_time;
+            int64_t exec_time = lane_end_times[i] - lane_start_times[i];
+            int64_t total_latency = lane_end_times[i] - global_start_time;
+            
+            fprintf(csv_file, "%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        fclose(csv_file);
+        std::cout << "\n✅ Timing data exported to 'timing_stats.csv'\n";
+    } else {
+        std::cerr << "\n❌ Failed to create CSV file\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // DUMP THROUGHPUT STATS TO CSV
+    // ------------------------------------------------------------------
+    FILE* throughput_file = fopen("throughput_stats.csv", "w");
+    if (throughput_file) {
+        double throughput = (N * 1000000.0 / duration.count());
+        
+        // Write header
+        fprintf(throughput_file, "Metric,Value,Unit\n");
+        
+        // Write throughput metrics
+        fprintf(throughput_file, "BatchSize,%d,IDs\n", N);
+        fprintf(throughput_file, "TotalTime,%ld,microseconds\n", duration.count());
+        fprintf(throughput_file, "Throughput,%.2f,IDs/sec\n", throughput);
+        fprintf(throughput_file, "AvgLatencyPerID,%.2f,nanoseconds\n", (duration.count() * 1000.0 / N));
+        
+        // Calculate per-group statistics
+        const int SIMD_WIDTH = 8;
+        int num_groups = (N + SIMD_WIDTH - 1) / SIMD_WIDTH;
+        
+        fprintf(throughput_file, "\nGroup,AvgQueueDelay,AvgExecTime,AvgTotalLatency,Unit\n");
+        for (int group = 0; group < num_groups; group++) {
+            int64_t total_queue = 0;
+            int64_t total_exec = 0;
+            int64_t total_latency = 0;
+            int lanes_in_group = std::min(SIMD_WIDTH, N - group * SIMD_WIDTH);
+            
+            for (int lane = 0; lane < lanes_in_group; lane++) {
+                int idx = group * SIMD_WIDTH + lane;
+                int64_t queue_delay = lane_start_times[idx] - global_start_time;
+                int64_t exec_time = lane_end_times[idx] - lane_start_times[idx];
+                int64_t latency = lane_end_times[idx] - global_start_time;
+                
+                total_queue += queue_delay;
+                total_exec += exec_time;
+                total_latency += latency;
+            }
+            
+            fprintf(throughput_file, "%d,%ld,%ld,%ld,cycles\n", 
+                    group,
+                    total_queue / lanes_in_group,
+                    total_exec / lanes_in_group,
+                    total_latency / lanes_in_group);
+        }
+        
+        // Cache warming analysis
+        if (num_groups >= 2) {
+            int64_t group0_avg = 0, group1_avg = 0;
+            for (int i = 0; i < SIMD_WIDTH && i < N; i++) {
+                group0_avg += (lane_end_times[i] - lane_start_times[i]);
+            }
+            group0_avg /= std::min(SIMD_WIDTH, N);
+            
+            if (N > SIMD_WIDTH) {
+                int lanes_in_group1 = std::min(SIMD_WIDTH, N - SIMD_WIDTH);
+                for (int i = 0; i < lanes_in_group1; i++) {
+                    group1_avg += (lane_end_times[SIMD_WIDTH + i] - lane_start_times[SIMD_WIDTH + i]);
+                }
+                group1_avg /= lanes_in_group1;
+                
+                double speedup = (double)group0_avg / group1_avg;
+                fprintf(throughput_file, "\nMetric,Value,Unit\n");
+                fprintf(throughput_file, "ColdCacheExecution,%ld,cycles\n", group0_avg);
+                fprintf(throughput_file, "WarmCacheExecution,%ld,cycles\n", group1_avg);
+                fprintf(throughput_file, "CacheWarmupSpeedup,%.2f,x\n", speedup);
+            }
+        }
+        
+        fclose(throughput_file);
+        std::cout << "✅ Throughput stats exported to 'throughput_stats.csv'\n";
+    } else {
+        std::cerr << "❌ Failed to create throughput CSV file\n";
+    }
+    
+    // ------------------------------------------------------------------
     // TIMING ANALYSIS
     // ------------------------------------------------------------------
     std::cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";

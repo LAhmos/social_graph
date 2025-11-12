@@ -311,6 +311,101 @@ constexpr int Q = 8;  // number of users we'll query
         }
         std::cout << "-----------------------------------\n";
     }
+    // ------------------------------------------------------------------
+    // DUMP TIMING DATA TO CSV
+    // ------------------------------------------------------------------
+    FILE* csv_file = fopen("timing_stats.csv", "w");
+    if (csv_file) {
+        // Write header
+        fprintf(csv_file, "Operation,Lane,QueueingDelay,ExecutionTime,TotalLatency\n");
+        
+        // Write insertion timing data
+        for (int i = 0; i < LARGE_N; i++) {
+            int64_t queue_delay = insert_lane_start[i] - global_start_insert;
+            int64_t exec_time = insert_lane_end[i] - insert_lane_start[i];
+            int64_t total_latency = insert_lane_end[i] - global_start_insert;
+            
+            fprintf(csv_file, "Insertion,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        // Write lookup timing data
+        for (int i = 0; i < Q; i++) {
+            int64_t queue_delay = lookup_lane_start[i] - global_start_lookup;
+            int64_t exec_time = lookup_lane_end[i] - lookup_lane_start[i];
+            int64_t total_latency = lookup_lane_end[i] - global_start_lookup;
+            
+            fprintf(csv_file, "Lookup,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        fclose(csv_file);
+        std::cout << "\n✅ Timing data exported to 'timing_stats.csv'\n";
+    } else {
+        std::cerr << "\n❌ Failed to create CSV file\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // DUMP THROUGHPUT STATS TO CSV
+    // ------------------------------------------------------------------
+    FILE* throughput_file = fopen("throughput_stats.csv", "w");
+    if (throughput_file) {
+        // Write header
+        fprintf(throughput_file, "Operation,Metric,Value,Unit\n");
+        
+        // Insertion metrics
+        double throughput_insert = (LARGE_N * 1000000000.0) / duration_insert_ns.count();
+        fprintf(throughput_file, "Insertion,BatchSize,%d,posts\n", LARGE_N);
+        fprintf(throughput_file, "Insertion,TotalTime,%ld,microseconds\n", duration_insert_us.count());
+        fprintf(throughput_file, "Insertion,Throughput,%.2f,posts/sec\n", throughput_insert);
+        fprintf(throughput_file, "Insertion,AvgLatencyPerPost,%.2f,nanoseconds\n", (duration_insert_ns.count() / (double)LARGE_N));
+        
+        // Lookup metrics
+        double throughput_lookup = (Q * 1000000000.0) / duration_lookup_ns.count();
+        fprintf(throughput_file, "Lookup,BatchSize,%d,queries\n", Q);
+        fprintf(throughput_file, "Lookup,TotalTime,%ld,microseconds\n", duration_lookup_us.count());
+        fprintf(throughput_file, "Lookup,Throughput,%.2f,queries/sec\n", throughput_lookup);
+        fprintf(throughput_file, "Lookup,AvgLatencyPerQuery,%.2f,nanoseconds\n", (duration_lookup_ns.count() / (double)Q));
+        fprintf(throughput_file, "Lookup,TotalPostsRetrieved,%d,posts\n", total_posts_retrieved);
+        
+        // Per-SIMD-group statistics for insertion
+        fprintf(throughput_file, "\nOperation,Group,AvgQueueDelay,AvgExecTime,AvgTotalLatency,Unit\n");
+        
+        for (int group = 0; group < LARGE_N / 8; group++) {
+            int64_t group_queue_delay = insert_lane_start[group * 8] - global_start_insert;
+            int64_t group_exec_sum = 0;
+            int64_t group_latency_sum = 0;
+            for (int i = 0; i < 8; i++) {
+                group_exec_sum += (insert_lane_end[group * 8 + i] - insert_lane_start[group * 8 + i]);
+                group_latency_sum += (insert_lane_end[group * 8 + i] - global_start_insert);
+            }
+            fprintf(throughput_file, "Insertion,%d,%ld,%ld,%ld,cycles\n", 
+                    group, group_queue_delay, group_exec_sum / 8, group_latency_sum / 8);
+        }
+        
+        // Per-lane statistics for lookup
+        for (int i = 0; i < Q; i++) {
+            int64_t queue_delay = lookup_lane_start[i] - global_start_lookup;
+            int64_t exec_time = lookup_lane_end[i] - lookup_lane_start[i];
+            int64_t latency = lookup_lane_end[i] - global_start_lookup;
+            fprintf(throughput_file, "Lookup,%d,%ld,%ld,%ld,cycles\n", i, queue_delay, exec_time, latency);
+        }
+        
+        // Cache warming analysis
+        if (LARGE_N >= 16) {
+            int64_t group0_exec = insert_lane_end[0] - insert_lane_start[0];
+            int64_t group1_exec = insert_lane_end[8] - insert_lane_start[8];
+            
+            fprintf(throughput_file, "\nMetric,Value,Unit\n");
+            fprintf(throughput_file, "ColdStartExecution,%ld,cycles\n", group0_exec);
+            fprintf(throughput_file, "WarmCacheExecution,%ld,cycles\n", group1_exec);
+            fprintf(throughput_file, "CacheWarmupSpeedup,%.2f,x\n", (double)group0_exec / group1_exec);
+        }
+        
+        fclose(throughput_file);
+        std::cout << "✅ Throughput stats exported to 'throughput_stats.csv'\n";
+    } else {
+        std::cerr << "❌ Failed to create throughput CSV file\n";
+    }
+
     std::cout << "Done.\n";
     return 0;
 }

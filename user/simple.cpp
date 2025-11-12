@@ -356,6 +356,106 @@ int main() {
                   << std::setw(12) << total_latency << "\n";
     }
 
+    // ------------------------------------------------------------------
+    // DUMP TIMING DATA TO CSV
+    // ------------------------------------------------------------------
+    FILE* csv_file = fopen("timing_stats.csv", "w");
+    if (csv_file) {
+        // Write header
+        fprintf(csv_file, "Operation,Lane,QueueingDelay,ExecutionTime,TotalLatency\n");
+        
+        // Write first batch timing data
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_1[i] - global_start_1;
+            int64_t exec_time = lane_end_1[i] - lane_start_1[i];
+            int64_t total_latency = lane_end_1[i] - global_start_1;
+            
+            fprintf(csv_file, "FirstNewUser,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        // Write second batch timing data
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_2[i] - global_start_2;
+            int64_t exec_time = lane_end_2[i] - lane_start_2[i];
+            int64_t total_latency = lane_end_2[i] - global_start_2;
+            
+            fprintf(csv_file, "SecondNewUser,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        // Write login timing data
+        for (int i = 0; i < 4; i++) {
+            int64_t queue_delay = lane_start_login[i] - global_start_login;
+            int64_t exec_time = lane_end_login[i] - lane_start_login[i];
+            int64_t total_latency = lane_end_login[i] - global_start_login;
+            
+            fprintf(csv_file, "Login,%d,%ld,%ld,%ld\n", i, queue_delay, exec_time, total_latency);
+        }
+        
+        fclose(csv_file);
+        std::cout << "\n✅ Timing data exported to 'timing_stats.csv'\n";
+    } else {
+        std::cerr << "\n❌ Failed to create CSV file\n";
+    }
+    
+    // ------------------------------------------------------------------
+    // DUMP THROUGHPUT STATS TO CSV
+    // ------------------------------------------------------------------
+    FILE* throughput_file = fopen("throughput_stats.csv", "w");
+    if (throughput_file) {
+        // Write header
+        fprintf(throughput_file, "Operation,Metric,Value,Unit\n");
+        
+        // First batch metrics
+        double throughput_1 = (N * 1000000.0 / duration_1.count());
+        fprintf(throughput_file, "FirstNewUser,BatchSize,%d,users\n", N);
+        fprintf(throughput_file, "FirstNewUser,TotalTime,%ld,microseconds\n", duration_1.count());
+        fprintf(throughput_file, "FirstNewUser,Throughput,%.2f,users/sec\n", throughput_1);
+        fprintf(throughput_file, "FirstNewUser,AvgLatencyPerUser,%.2f,nanoseconds\n", (duration_1.count() * 1000.0 / N));
+        
+        // Second batch metrics
+        double throughput_2 = (N * 1000000.0 / duration_2.count());
+        fprintf(throughput_file, "SecondNewUser,BatchSize,%d,users\n", N);
+        fprintf(throughput_file, "SecondNewUser,TotalTime,%ld,microseconds\n", duration_2.count());
+        fprintf(throughput_file, "SecondNewUser,Throughput,%.2f,users/sec\n", throughput_2);
+        fprintf(throughput_file, "SecondNewUser,AvgLatencyPerUser,%.2f,nanoseconds\n", (duration_2.count() * 1000.0 / N));
+        
+        // Login batch metrics
+        double throughput_login = (4 * 1000000.0 / duration_login.count());
+        fprintf(throughput_file, "Login,BatchSize,%d,logins\n", 4);
+        fprintf(throughput_file, "Login,TotalTime,%ld,microseconds\n", duration_login.count());
+        fprintf(throughput_file, "Login,Throughput,%.2f,logins/sec\n", throughput_login);
+        fprintf(throughput_file, "Login,AvgLatencyPerLogin,%.2f,nanoseconds\n", (duration_login.count() * 1000.0 / 4));
+        
+        // Per-lane statistics for each operation
+        fprintf(throughput_file, "\nOperation,Lane,AvgQueueDelay,AvgExecTime,AvgTotalLatency,Unit\n");
+        
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_1[i] - global_start_1;
+            int64_t exec_time = lane_end_1[i] - lane_start_1[i];
+            int64_t latency = lane_end_1[i] - global_start_1;
+            fprintf(throughput_file, "FirstNewUser,%d,%ld,%ld,%ld,cycles\n", i, queue_delay, exec_time, latency);
+        }
+        
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_2[i] - global_start_2;
+            int64_t exec_time = lane_end_2[i] - lane_start_2[i];
+            int64_t latency = lane_end_2[i] - global_start_2;
+            fprintf(throughput_file, "SecondNewUser,%d,%ld,%ld,%ld,cycles\n", i, queue_delay, exec_time, latency);
+        }
+        
+        for (int i = 0; i < 4; i++) {
+            int64_t queue_delay = lane_start_login[i] - global_start_login;
+            int64_t exec_time = lane_end_login[i] - lane_start_login[i];
+            int64_t latency = lane_end_login[i] - global_start_login;
+            fprintf(throughput_file, "Login,%d,%ld,%ld,%ld,cycles\n", i, queue_delay, exec_time, latency);
+        }
+        
+        fclose(throughput_file);
+        std::cout << "✅ Throughput stats exported to 'throughput_stats.csv'\n";
+    } else {
+        std::cerr << "❌ Failed to create throughput CSV file\n";
+    }
+
     std::cout << "\nDone.\n";
     return 0;
 }
