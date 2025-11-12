@@ -220,7 +220,222 @@ static void process_single_text(
 }
 
 //--------------------------------------------------
-// Batch kernel: process multiple texts in parallel
+// Vectorized helper: process multiple texts in parallel (SIMD across texts)
+//--------------------------------------------------
+static void process_texts_vectorized(
+    uniform const uint8 texts[],
+    varying int text_indices,           // Which text each lane processes
+    uniform TextResult results[],
+    varying int text_lens,
+    varying int64 &start_time,
+    varying int64 &end_time
+)
+{
+    // Each SIMD lane processes a different text
+    start_time = clock();
+    
+    // Calculate base offset for each lane's text
+    varying int base_offset = text_indices * MAX_TEXT_LEN;
+    
+    // Initialize result counts to 0 for each lane
+    varying int num_mentions = 0;
+    varying int num_urls = 0;
+    
+    // Extract user mentions (@username) - vectorized across texts
+    for (uniform int idx = 0; idx < MAX_TEXT_LEN; idx++) {
+        // Each lane reads from its own text
+        varying uint8 current_char = texts[base_offset + idx];
+        varying bool found_at = (current_char == 64) && (idx < text_lens) && (num_mentions < MAX_MENTIONS);
+        
+        if (any(found_at)) {
+            // Handle mention extraction per lane that found '@'
+            foreach_active(lane) {
+                uniform int lane_idx = extract(text_indices, lane);
+                uniform int lane_offset = extract(base_offset, lane);
+                uniform int lane_text_len = extract(text_lens, lane);
+                uniform int lane_mentions = extract(num_mentions, lane);
+                
+                if (extract(found_at, lane)) {
+                    uniform int start = idx + 1;
+                    uniform int end = start;
+                    
+                    // Find end of mention
+                    while (end < lane_text_len && texts[lane_offset + end] != 32 && 
+                           texts[lane_offset + end] != 44 && texts[lane_offset + end] != 0 && 
+                           texts[lane_offset + end] != 10 && texts[lane_offset + end] != 13) {
+                        end++;
+                    }
+                    
+                    uniform int mention_len = end - start;
+                    if (mention_len > 0 && mention_len < 63 && lane_mentions < MAX_MENTIONS) {
+                        memcpy_ispc(results[lane_idx].mentions[lane_mentions], 
+                                   &texts[lane_offset + start], mention_len);
+                        results[lane_idx].mentions[lane_mentions][mention_len] = 0;
+                        
+                        // Update varying counter
+                        num_mentions = insert(num_mentions, lane, lane_mentions + 1);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Store mention counts
+    foreach_active(lane) {
+        uniform int lane_idx = extract(text_indices, lane);
+        results[lane_idx].num_mentions = extract(num_mentions, lane);
+    }
+    
+    // Extract URLs - vectorized across texts
+    for (uniform int idx = 0; idx < MAX_TEXT_LEN - 8; idx++) {
+        varying int check_offset = base_offset + idx;
+        
+        // Check for "http://" or "https://" in parallel across lanes
+        varying bool is_http = (idx + 7 <= text_lens) &&
+                       (texts[check_offset] == 104) && (texts[check_offset+1] == 116) && 
+                       (texts[check_offset+2] == 116) && (texts[check_offset+3] == 112) &&
+                       (texts[check_offset+4] == 58) && (texts[check_offset+5] == 47) && 
+                       (texts[check_offset+6] == 47);
+        
+        varying bool is_https = (idx + 8 <= text_lens) &&
+                        (texts[check_offset] == 104) && (texts[check_offset+1] == 116) && 
+                        (texts[check_offset+2] == 116) && (texts[check_offset+3] == 112) &&
+                        (texts[check_offset+4] == 115) && (texts[check_offset+5] == 58) &&
+                        (texts[check_offset+6] == 47) && (texts[check_offset+7] == 47);
+        
+        varying bool found_url = (is_http || is_https) && (num_urls < MAX_URLS);
+        
+        if (any(found_url)) {
+            // Handle URL extraction per lane that found URL
+            foreach_active(lane) {
+                uniform int lane_idx = extract(text_indices, lane);
+                uniform int lane_offset = extract(base_offset, lane);
+                uniform int lane_text_len = extract(text_lens, lane);
+                uniform int lane_urls = extract(num_urls, lane);
+                
+                if (extract(found_url, lane) && lane_urls < MAX_URLS) {
+                    uniform int start = idx;
+                    uniform int end = start;
+                    
+                    // Find end of URL
+                    while (end < lane_text_len && texts[lane_offset + end] != 32 && 
+                           texts[lane_offset + end] != 44 && texts[lane_offset + end] != 0 && 
+                           texts[lane_offset + end] != 10 && texts[lane_offset + end] != 13) {
+                        end++;
+                    }
+                    
+                    uniform int url_len = end - start;
+                    if (url_len > 0 && url_len < MAX_URL_LEN - 1) {
+                        // Store original URL
+                        memcpy_ispc(results[lane_idx].urls[lane_urls], 
+                                   &texts[lane_offset + start], url_len);
+                        results[lane_idx].urls[lane_urls][url_len] = 0;
+                        
+                        // Generate shortened URL
+                        uniform int64 url_hash = hashURL(&texts[lane_offset + start], url_len);
+                        
+                        // Build shortened URL: "http://short-url/"
+                        uniform uint8 hostname[18];
+                        hostname[0] = 104; hostname[1] = 116; hostname[2] = 116; hostname[3] = 112;
+                        hostname[4] = 58; hostname[5] = 47; hostname[6] = 47;
+                        hostname[7] = 115; hostname[8] = 104; hostname[9] = 111; hostname[10] = 114;
+                        hostname[11] = 116; hostname[12] = 45; hostname[13] = 117; hostname[14] = 114;
+                        hostname[15] = 108; hostname[16] = 47; hostname[17] = 0;
+                        uniform int hostname_len = 17;
+                        
+                        memcpy_ispc(results[lane_idx].shortened_urls[lane_urls], hostname, hostname_len);
+                        
+                        uniform uint8 short_id[64];
+                        idToShortURL(url_hash, short_id);
+                        
+                        uniform int short_id_len = strlen_ispc(short_id);
+                        memcpy_ispc(&results[lane_idx].shortened_urls[lane_urls][hostname_len], 
+                                   short_id, short_id_len);
+                        results[lane_idx].shortened_urls[lane_urls][hostname_len + short_id_len] = 0;
+                        
+                        // Update varying counter
+                        num_urls = insert(num_urls, lane, lane_urls + 1);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Store URL counts and build updated text
+    foreach_active(lane) {
+        uniform int lane_idx = extract(text_indices, lane);
+        uniform int lane_urls = extract(num_urls, lane);
+        results[lane_idx].num_urls = lane_urls;
+        
+        // Build updated text with shortened URLs
+        uniform int lane_offset = extract(base_offset, lane);
+        uniform int lane_text_len = extract(text_lens, lane);
+        
+        if (lane_urls > 0) {
+            uniform int out_idx = 0;
+            uniform int text_idx = 0;
+            uniform int url_count = 0;
+            
+            while (text_idx < lane_text_len && out_idx < MAX_TEXT_LEN - 1) {
+                uniform bool is_http = (text_idx + 7 <= lane_text_len &&
+                               texts[lane_offset + text_idx] == 104 && 
+                               texts[lane_offset + text_idx+1] == 116 && 
+                               texts[lane_offset + text_idx+2] == 116 && 
+                               texts[lane_offset + text_idx+3] == 112 && 
+                               texts[lane_offset + text_idx+4] == 58 && 
+                               texts[lane_offset + text_idx+5] == 47 && 
+                               texts[lane_offset + text_idx+6] == 47);
+                
+                uniform bool is_https = (text_idx + 8 <= lane_text_len &&
+                                texts[lane_offset + text_idx] == 104 && 
+                                texts[lane_offset + text_idx+1] == 116 && 
+                                texts[lane_offset + text_idx+2] == 116 && 
+                                texts[lane_offset + text_idx+3] == 112 && 
+                                texts[lane_offset + text_idx+4] == 115 && 
+                                texts[lane_offset + text_idx+5] == 58 &&
+                                texts[lane_offset + text_idx+6] == 47 && 
+                                texts[lane_offset + text_idx+7] == 47);
+                
+                if ((is_http || is_https) && url_count < lane_urls) {
+                    // Skip original URL
+                    uniform int url_end = text_idx;
+                    while (url_end < lane_text_len && 
+                           texts[lane_offset + url_end] != 32 && 
+                           texts[lane_offset + url_end] != 44 && 
+                           texts[lane_offset + url_end] != 0 && 
+                           texts[lane_offset + url_end] != 10 && 
+                           texts[lane_offset + url_end] != 13) {
+                        url_end++;
+                    }
+                    
+                    // Insert shortened URL
+                    uniform int short_len = strlen_ispc(results[lane_idx].shortened_urls[url_count]);
+                    if (out_idx + short_len < MAX_TEXT_LEN - 1) {
+                        memcpy_ispc(&results[lane_idx].updated_text[out_idx], 
+                                   results[lane_idx].shortened_urls[url_count], short_len);
+                        out_idx += short_len;
+                    }
+                    
+                    text_idx = url_end;
+                    url_count++;
+                } else {
+                    results[lane_idx].updated_text[out_idx++] = texts[lane_offset + text_idx++];
+                }
+            }
+            results[lane_idx].updated_text[out_idx] = 0;
+        } else {
+            // No URLs, copy original text
+            uniform int copy_len = (lane_text_len < MAX_TEXT_LEN - 1) ? lane_text_len : (MAX_TEXT_LEN - 1);
+            memcpy_ispc(results[lane_idx].updated_text, &texts[lane_offset], copy_len);
+            results[lane_idx].updated_text[copy_len] = 0;
+        }
+    }
+    
+    end_time = clock();
+}
+
+//--------------------------------------------------
+// Batch kernel: process multiple texts in parallel using VECTORIZATION
 //--------------------------------------------------
 export void processText_batch(
     uniform const uint8 texts[],        // [N * MAX_TEXT_LEN]
@@ -233,16 +448,13 @@ export void processText_batch(
     // Capture global start time
     global_start_time = clock();
     
-    // Process each text - calling C function for correctness
-    for (uniform int i = 0; i < N; i++) {
-        // Record when this task starts
-        uniform int64 actual_start_time = clock();
+    // Process texts in parallel using foreach - processes programCount texts at once
+    // This is TRUE VECTORIZATION: each SIMD lane processes a different text simultaneously
+    foreach (i = 0 ... N) {
+        // Calculate text length for each lane
+        varying int text_len = 0;
+        varying int offset = i * MAX_TEXT_LEN;
         
-        // Calculate offset
-        uniform int offset = i * MAX_TEXT_LEN;
-        
-        // Calculate text length
-        uniform int text_len = 0;
         for (uniform int j = 0; j < MAX_TEXT_LEN; j++) {
             if (texts[offset + j] == 0) {
                 text_len = j;
@@ -251,21 +463,13 @@ export void processText_batch(
         }
         if (text_len == 0) text_len = MAX_TEXT_LEN;
         
-        // Process this text using ISPC implementation
-        process_single_text(
-            &texts[offset],
-            text_len,
-            results[i].mentions,
-            &results[i].num_mentions,
-            results[i].urls,
-            &results[i].num_urls,
-            results[i].shortened_urls,
-            results[i].updated_text
-        );
+        varying int64 start_time, end_time;
         
-        // Record end time
-        uniform int64 end_time = clock();
-        lane_start_times[i] = actual_start_time;
+        // Process this batch of texts in SIMD
+        process_texts_vectorized(texts, i, results, text_len, start_time, end_time);
+        
+        // Store timing results
+        lane_start_times[i] = start_time;
         lane_end_times[i] = end_time;
     }
 }

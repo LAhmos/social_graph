@@ -1,0 +1,23 @@
+
+# Generated ISPC files
+*.o
+*_ispc.h
+*_ispc.ll
+*.s
+
+# Compiled binaries
+simple
+text
+post
+user
+shortURL
+userTag
+uniqueID
+
+# Performance stats
+timing_stats.csv
+throughput_stats.csv
+
+# Empty placeholder files
+*_pthread.cpp
+*_pthread.h
