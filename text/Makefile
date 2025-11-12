@@ -29,8 +29,8 @@ $(TARGET): text.cpp
 $(ISPC_OBJ): $(ISPC_SRC)
 	$(ISPC) $(ISPC_SRC) $(ISPCFLAGS) -h $(ISPC_HDR) -o $(ISPC_OBJ)
 
-$(ISPC_TARGET): $(CPP_SRC) $(ISPC_OBJ) text_kernel.cpp
-	$(CXX) $(CXXFLAGS) $(CPP_SRC) text_kernel.cpp $(ISPC_OBJ) -o $(ISPC_TARGET)
+$(ISPC_TARGET): $(CPP_SRC) $(ISPC_OBJ)
+	$(CXX) $(CXXFLAGS) $(CPP_SRC) $(ISPC_OBJ) -o $(ISPC_TARGET)
 
 run: $(TARGET)
 	./$(TARGET) usatoday_facebook_statuses.csv 10
