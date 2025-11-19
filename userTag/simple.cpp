@@ -1135,12 +1135,15 @@ int main(int argc, char* argv[]) {
     std::cout << "⚡ Energy Measurement Results\n";
     std::cout << std::string(60, '=') << "\n";
     
+    // Build energy filename with thread count for MT mode (matching other services)
+    std::string energy_technique = use_ispc ? "ispc" : ("mt" + std::to_string(num_threads > 0 ? num_threads : 8) + "_" + mt_mode);
+    
     if (test_type == "insert") {
         EnergyMonitor::compute_stats(insert_energy_stats);
         EnergyMonitor::print_stats(insert_energy_stats);
         
-        std::string energy_csv = "energy_measurements_insert_" + energy_mode + "_b" + std::to_string(batch_size) + ".csv";
-        std::string energy_summary = "energy_summary_insert_" + energy_mode + "_b" + std::to_string(batch_size) + ".csv";
+        std::string energy_csv = "energy_measurements_insert_" + energy_technique + "_b" + std::to_string(batch_size) + ".csv";
+        std::string energy_summary = "energy_summary_insert_" + energy_technique + "_b" + std::to_string(batch_size) + ".csv";
         EnergyMonitor::export_csv({insert_energy_stats}, energy_csv);
         EnergyMonitor::export_summary_csv({insert_energy_stats}, energy_summary);
         std::cout << "✅ Energy data exported to '" << energy_csv << "' and '" << energy_summary << "'\n";
@@ -1148,8 +1151,8 @@ int main(int argc, char* argv[]) {
         EnergyMonitor::compute_stats(lookup_energy_stats);
         EnergyMonitor::print_stats(lookup_energy_stats);
         
-        std::string energy_csv = "energy_measurements_lookup_" + energy_mode + "_q" + std::to_string(lookup_queries) + ".csv";
-        std::string energy_summary = "energy_summary_lookup_" + energy_mode + "_q" + std::to_string(lookup_queries) + ".csv";
+        std::string energy_csv = "energy_measurements_lookup_" + energy_technique + "_q" + std::to_string(lookup_queries) + ".csv";
+        std::string energy_summary = "energy_summary_lookup_" + energy_technique + "_q" + std::to_string(lookup_queries) + ".csv";
         EnergyMonitor::export_csv({lookup_energy_stats}, energy_csv);
         EnergyMonitor::export_summary_csv({lookup_energy_stats}, energy_summary);
         std::cout << "✅ Energy data exported to '" << energy_csv << "' and '" << energy_summary << "'\n";

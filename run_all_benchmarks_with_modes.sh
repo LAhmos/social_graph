@@ -35,7 +35,7 @@ mkdir -p "${RESULTS_DIR}"
 
 # Summary file
 SUMMARY_FILE="${RESULTS_DIR}/benchmark_summary.csv"
-echo "Service,Operation,Mode,Threads,MTMode,MaxLatency_cycles,Throughput_ops_per_sec,Speedup_vs_MT1_Spawn,Throughput_Ratio_vs_MT1_Spawn" > "${SUMMARY_FILE}"
+echo "Service,Operation,Mode,Threads,MTMode,MaxLatency_cycles,Throughput_ops_per_sec,Speedup_vs_MT1_Spawn,Throughput_Ratio_vs_MT1_Spawn,Total_Core_Energy_J,Total_Pkg_Energy_J,Total_DRAM_Energy_J,Avg_Pkg_Power_W,Energy_Ratio_vs_MT1_Spawn" > "${SUMMARY_FILE}"
 
 # Function to extract max total latency from timing CSV (largest lane latency)
 extract_max_latency_from_timing() {
@@ -78,6 +78,33 @@ calculate_throughput() {
         echo "$throughput"
     else
         echo "0"
+    fi
+}
+
+# Function to extract energy metrics from energy summary CSV
+extract_energy_metrics() {
+    local energy_summary_file=$1
+    
+    if [[ -f "$energy_summary_file" ]]; then
+        # Energy summary format: Kernel,Samples,AvgPackage_J,StdDevPackage_J,AvgCore_J,StdDevCore_J,
+        #                        AvgDRAM_J,StdDevDRAM_J,TotalPackage_J,TotalCore_J,TotalDRAM_J,TotalTime_s,
+        #                        AvgTime_s,AvgPower_W,MinPackage_J,MaxPackage_J,CV_Percent
+        # Skip header and get the data row
+        local data_line=$(tail -n +2 "$energy_summary_file" 2>/dev/null | head -1)
+        
+        if [[ -n "$data_line" ]]; then
+            # Extract: TotalPackage_J (col 9), TotalCore_J (col 10), TotalDRAM_J (col 11), AvgPower_W (col 14)
+            local total_pkg_energy=$(echo "$data_line" | cut -d',' -f9)
+            local total_core_energy=$(echo "$data_line" | cut -d',' -f10)
+            local total_dram_energy=$(echo "$data_line" | cut -d',' -f11)
+            local avg_pkg_power=$(echo "$data_line" | cut -d',' -f14)
+            
+            echo "${total_core_energy},${total_pkg_energy},${total_dram_energy},${avg_pkg_power}"
+        else
+            echo "0,0,0,0"
+        fi
+    else
+        echo "0,0,0,0"
     fi
 }
 
@@ -172,6 +199,8 @@ run_benchmark() {
             cp -f throughput_stats_${csv_pattern}_${operation}_N${batch_size}_fail*.csv "${result_prefix}_throughput.csv" 2>/dev/null || true
             cp -f benchmark_stats_${csv_pattern}_${operation}_N${batch_size}_fail*.csv "${result_prefix}_benchmark.csv" 2>/dev/null || true
             cp -f raw_measurements_${csv_pattern}_${operation}_N${batch_size}_fail*.csv "${result_prefix}_raw.csv" 2>/dev/null || true
+            cp -f energy_measurements_${csv_pattern}_${operation}_N${batch_size}_fail*.csv "${result_prefix}_energy.csv" 2>/dev/null || true
+            cp -f energy_summary_${csv_pattern}_${operation}_N${batch_size}_fail*.csv "${result_prefix}_energy_summary.csv" 2>/dev/null || true
         elif [[ "$service" == "post" ]]; then
             # post pattern: timing_stats_{operation}_{mode}_N{batch}.csv
             local csv_pattern="${operation}_${mode}"
@@ -182,16 +211,29 @@ run_benchmark() {
             cp -f throughput_stats_${csv_pattern}_N${batch_size}.csv "${result_prefix}_throughput.csv" 2>/dev/null || true
             cp -f benchmark_stats_${csv_pattern}_N${batch_size}.csv "${result_prefix}_benchmark.csv" 2>/dev/null || true
             cp -f raw_measurements_${csv_pattern}_N${batch_size}.csv "${result_prefix}_raw.csv" 2>/dev/null || true
+            cp -f energy_measurements_${csv_pattern}_N${batch_size}.csv "${result_prefix}_energy.csv" 2>/dev/null || true
+            cp -f energy_summary_${csv_pattern}_N${batch_size}.csv "${result_prefix}_energy_summary.csv" 2>/dev/null || true
         elif [[ "$service" == "userTag" ]]; then
             # userTag pattern: timing_stats_{operation}_{mode}.csv
+            # energy files now use same pattern as other services: energy_*_{operation}_mt{threads}_{mt_mode}_[b/q]{batch_size}.csv
             local csv_pattern="${operation}_${mode}"
+            
             if [[ "$mode" == "mt" ]]; then
                 csv_pattern="${operation}_mt${threads}_${mt_mode}"
             fi
+            
+            # Determine the batch/query size prefix (b for insert, q for lookup)
+            local size_prefix="b"
+            if [[ "$operation" == "lookup" ]]; then
+                size_prefix="q"
+            fi
+            
             cp -f timing_stats_${csv_pattern}.csv "${result_prefix}_timing.csv" 2>/dev/null || true
             cp -f throughput_stats_${csv_pattern}.csv "${result_prefix}_throughput.csv" 2>/dev/null || true
             cp -f benchmark_stats_${csv_pattern}.csv "${result_prefix}_benchmark.csv" 2>/dev/null || true
             cp -f raw_measurements_${csv_pattern}.csv "${result_prefix}_raw.csv" 2>/dev/null || true
+            cp -f energy_measurements_${csv_pattern}_${size_prefix}${batch_size}.csv "${result_prefix}_energy.csv" 2>/dev/null || true
+            cp -f energy_summary_${csv_pattern}_${size_prefix}${batch_size}.csv "${result_prefix}_energy_summary.csv" 2>/dev/null || true
         elif [[ "$service" == "text" ]]; then
             # text service pattern: timing_stats_compose_{mode}_N{batch}.csv
             local csv_pattern="compose_${mode}"
@@ -202,6 +244,8 @@ run_benchmark() {
             cp -f throughput_stats_${csv_pattern}_N${batch_size}.csv "${result_prefix}_throughput.csv" 2>/dev/null || true
             cp -f benchmark_stats_${csv_pattern}_N${batch_size}.csv "${result_prefix}_benchmark.csv" 2>/dev/null || true
             cp -f raw_measurements_${csv_pattern}_N${batch_size}.csv "${result_prefix}_raw.csv" 2>/dev/null || true
+            cp -f energy_measurements_${csv_pattern}_N${batch_size}.csv "${result_prefix}_energy.csv" 2>/dev/null || true
+            cp -f energy_summary_${csv_pattern}_N${batch_size}.csv "${result_prefix}_energy_summary.csv" 2>/dev/null || true
         elif [[ "$service" == "uniqueID" || "$service" == "shortURL" ]]; then
             # uniqueID and shortURL pattern: timing_stats_{mode}_N{batch}.csv
             local csv_pattern="${mode}"
@@ -212,27 +256,39 @@ run_benchmark() {
             cp -f throughput_stats_${csv_pattern}_N${batch_size}.csv "${result_prefix}_throughput.csv" 2>/dev/null || true
             cp -f benchmark_stats_${csv_pattern}_N${batch_size}.csv "${result_prefix}_benchmark.csv" 2>/dev/null || true
             cp -f raw_measurements_${csv_pattern}_N${batch_size}.csv "${result_prefix}_raw.csv" 2>/dev/null || true
+            cp -f energy_measurements_${csv_pattern}_N${batch_size}.csv "${result_prefix}_energy.csv" 2>/dev/null || true
+            cp -f energy_summary_${csv_pattern}_N${batch_size}.csv "${result_prefix}_energy_summary.csv" 2>/dev/null || true
         else
             # Generic fallback: use wildcard (may need refinement)
             cp -f timing_stats*.csv "${result_prefix}_timing.csv" 2>/dev/null || true
             cp -f throughput_stats*.csv "${result_prefix}_throughput.csv" 2>/dev/null || true
             cp -f benchmark_stats*.csv "${result_prefix}_benchmark.csv" 2>/dev/null || true
             cp -f raw_measurements*.csv "${result_prefix}_raw.csv" 2>/dev/null || true
+            cp -f energy_measurements*.csv "${result_prefix}_energy.csv" 2>/dev/null || true
+            cp -f energy_summary*.csv "${result_prefix}_energy_summary.csv" 2>/dev/null || true
         fi
         
         # Extract metrics from timing CSV file (max total latency across all lanes)
         local max_latency_cycles=$(extract_max_latency_from_timing "${result_prefix}_timing.csv")
         local throughput=$(calculate_throughput "${max_latency_cycles}" "${batch_size}")
         
+        # Extract energy metrics from energy summary CSV
+        local energy_metrics=$(extract_energy_metrics "${result_prefix}_energy_summary.csv")
+        local total_core_energy=$(echo "$energy_metrics" | cut -d',' -f1)
+        local total_pkg_energy=$(echo "$energy_metrics" | cut -d',' -f2)
+        local total_dram_energy=$(echo "$energy_metrics" | cut -d',' -f3)
+        local avg_pkg_power=$(echo "$energy_metrics" | cut -d',' -f4)
+        
         echo "  Max lane latency: ${max_latency_cycles} cycles"
         echo "  Throughput: ${throughput} ops/sec"
+        echo "  Total Core Energy: ${total_core_energy} J, Avg Power: ${avg_pkg_power} W"
         
         # Store for speedup calculation (using cycles instead of microseconds)
-        echo "${max_latency_cycles},${throughput}" > "${result_prefix}_metrics.txt"
+        echo "${max_latency_cycles},${throughput},${total_core_energy},${total_pkg_energy},${total_dram_energy},${avg_pkg_power}" > "${result_prefix}_metrics.txt"
         
     else
         echo -e "  ${RED}✗ Failed - check ${output_file}${NC}"
-        echo "0,0" > "${result_prefix}_metrics.txt"
+        echo "0,0,0,0,0,0" > "${result_prefix}_metrics.txt"
     fi
     
     cd - > /dev/null
@@ -255,13 +311,21 @@ add_to_summary() {
     
     local mt1_spawn_cycles=$(cut -d',' -f1 "$mt1_spawn_file")
     local mt1_spawn_throughput=$(cut -d',' -f2 "$mt1_spawn_file")
-    echo "  MT1 SPAWN baseline: ${mt1_spawn_cycles} cycles, ${mt1_spawn_throughput} ops/sec"
+    local mt1_spawn_total_core_energy=$(cut -d',' -f3 "$mt1_spawn_file")
+    local mt1_spawn_total_pkg_energy=$(cut -d',' -f4 "$mt1_spawn_file")
+    local mt1_spawn_total_dram_energy=$(cut -d',' -f5 "$mt1_spawn_file")
+    local mt1_spawn_avg_pkg_power=$(cut -d',' -f6 "$mt1_spawn_file")
+    echo "  MT1 SPAWN baseline: ${mt1_spawn_cycles} cycles, ${mt1_spawn_throughput} ops/sec, ${mt1_spawn_total_core_energy} J (total core)"
     
     # Process ISPC
     local ispc_file="${RESULTS_DIR}/${service}_${operation}_ispc_metrics.txt"
     if [[ -f "$ispc_file" ]]; then
         local max_latency_cycles=$(cut -d',' -f1 "$ispc_file")
         local throughput=$(cut -d',' -f2 "$ispc_file")
+        local total_core_energy=$(cut -d',' -f3 "$ispc_file")
+        local total_pkg_energy=$(cut -d',' -f4 "$ispc_file")
+        local total_dram_energy=$(cut -d',' -f5 "$ispc_file")
+        local avg_pkg_power=$(cut -d',' -f6 "$ispc_file")
         
         # Calculate speedup vs MT1 SPAWN (lower cycles = faster = higher speedup)
         local speedup="1.00"
@@ -275,8 +339,14 @@ add_to_summary() {
             throughput_ratio=$(echo "scale=2; ${throughput} / ${mt1_spawn_throughput}" | bc -l)
         fi
         
-        echo "${service},${operation},ispc,,N/A,${max_latency_cycles},${throughput},${speedup},${throughput_ratio}" >> "${SUMMARY_FILE}"
-        echo "  ISPC: ${max_latency_cycles} cycles, ${throughput} ops/sec, ${speedup}x speedup, ${throughput_ratio}x throughput"
+        # Calculate energy ratio vs MT1 SPAWN (lower total core energy = better = ratio < 1.00)
+        local energy_ratio="1.00"
+        if [[ "$total_core_energy" != "0" && -n "$total_core_energy" && "$mt1_spawn_total_core_energy" != "0" ]]; then
+            energy_ratio=$(echo "scale=2; ${total_core_energy} / ${mt1_spawn_total_core_energy}" | bc -l)
+        fi
+        
+        echo "${service},${operation},ispc,,N/A,${max_latency_cycles},${throughput},${speedup},${throughput_ratio},${total_core_energy},${total_pkg_energy},${total_dram_energy},${avg_pkg_power},${energy_ratio}" >> "${SUMMARY_FILE}"
+        echo "  ISPC: ${max_latency_cycles} cycles, ${throughput} ops/sec, ${speedup}x speedup, ${throughput_ratio}x throughput, ${total_core_energy}J total (${energy_ratio}x energy)"
     fi
     
     # Process each MT mode
@@ -286,6 +356,10 @@ add_to_summary() {
             if [[ -f "$metrics_file" ]]; then
                 local max_latency_cycles=$(cut -d',' -f1 "$metrics_file")
                 local throughput=$(cut -d',' -f2 "$metrics_file")
+                local total_core_energy=$(cut -d',' -f3 "$metrics_file")
+                local total_pkg_energy=$(cut -d',' -f4 "$metrics_file")
+                local total_dram_energy=$(cut -d',' -f5 "$metrics_file")
+                local avg_pkg_power=$(cut -d',' -f6 "$metrics_file")
                 
                 # Calculate speedup vs MT1 SPAWN (lower cycles = faster = higher speedup)
                 local speedup="1.00"
@@ -299,8 +373,14 @@ add_to_summary() {
                     throughput_ratio=$(echo "scale=2; ${throughput} / ${mt1_spawn_throughput}" | bc -l)
                 fi
                 
-                echo "${service},${operation},mt,${threads},${mt_mode},${max_latency_cycles},${throughput},${speedup},${throughput_ratio}" >> "${SUMMARY_FILE}"
-                echo "  MT${threads} (${mt_mode}): ${max_latency_cycles} cycles, ${throughput} ops/sec, ${speedup}x speedup, ${throughput_ratio}x throughput"
+                # Calculate energy ratio vs MT1 SPAWN (lower total core energy = better = ratio < 1.00)
+                local energy_ratio="1.00"
+                if [[ "$total_core_energy" != "0" && -n "$total_core_energy" && "$mt1_spawn_total_core_energy" != "0" ]]; then
+                    energy_ratio=$(echo "scale=2; ${total_core_energy} / ${mt1_spawn_total_core_energy}" | bc -l)
+                fi
+                
+                echo "${service},${operation},mt,${threads},${mt_mode},${max_latency_cycles},${throughput},${speedup},${throughput_ratio},${total_core_energy},${total_pkg_energy},${total_dram_energy},${avg_pkg_power},${energy_ratio}" >> "${SUMMARY_FILE}"
+                echo "  MT${threads} (${mt_mode}): ${max_latency_cycles} cycles, ${throughput} ops/sec, ${speedup}x speedup, ${throughput_ratio}x throughput, ${total_core_energy}J total (${energy_ratio}x energy)"
             fi
         done
     done
@@ -468,20 +548,34 @@ Iterations per test: ${ITERATIONS}
 Thread counts tested: ${THREAD_COUNTS[@]}
 MT modes tested: ${MT_MODES[@]}
 
-All speedups and throughput ratios calculated relative to MT1 (SPAWN mode) baseline.
+All speedups, throughput ratios, and energy ratios calculated relative to MT1 (SPAWN mode) baseline.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-RESULTS BY SERVICE:
+PERFORMANCE RESULTS BY SERVICE:
 
 EOF
 
 # Read and format summary
-while IFS=',' read -r service operation mode threads mt_mode max_latency throughput speedup throughput_ratio; do
+while IFS=',' read -r service operation mode threads mt_mode max_latency throughput speedup throughput_ratio pkg_energy core_energy dram_energy pkg_power energy_ratio; do
     if [[ "$service" == "Service" ]]; then continue; fi
     
     printf "%-12s %-10s %-6s %-8s %-8s %15s cycles %15s ops/s %8s %10s\n" \
         "$service" "$operation" "$mode" "$threads" "$mt_mode" "$max_latency" "$throughput" "${speedup}x" "${throughput_ratio}x" >> "${REPORT_FILE}"
+done < "${SUMMARY_FILE}"
+
+echo "" >> "${REPORT_FILE}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "${REPORT_FILE}"
+echo "" >> "${REPORT_FILE}"
+echo "ENERGY RESULTS BY SERVICE:" >> "${REPORT_FILE}"
+echo "" >> "${REPORT_FILE}"
+
+# Read and format energy summary
+while IFS=',' read -r service operation mode threads mt_mode max_latency throughput speedup throughput_ratio total_core_energy total_pkg_energy total_dram_energy avg_pkg_power energy_ratio; do
+    if [[ "$service" == "Service" ]]; then continue; fi
+    
+    printf "%-12s %-10s %-6s %-8s %-8s %10s J %10s J %10s J %10s W %10s\n" \
+        "$service" "$operation" "$mode" "$threads" "$mt_mode" "$total_core_energy" "$total_pkg_energy" "$total_dram_energy" "$avg_pkg_power" "${energy_ratio}x" >> "${REPORT_FILE}"
 done < "${SUMMARY_FILE}"
 
 echo "" >> "${REPORT_FILE}"

@@ -48,6 +48,10 @@ struct EnergyStats {
     double avg_dram_j;
     double avg_time_s;
     double avg_power_w;
+    double total_pkg_j;
+    double total_core_j;
+    double total_dram_j;
+    double total_time_s;
     double stddev_pkg_j;
     double stddev_core_j;
     double stddev_dram_j;
@@ -56,6 +60,7 @@ struct EnergyStats {
     
     EnergyStats(const std::string& name) : kernel_name(name),
         avg_pkg_j(0), avg_core_j(0), avg_dram_j(0), avg_time_s(0), avg_power_w(0),
+        total_pkg_j(0), total_core_j(0), total_dram_j(0), total_time_s(0),
         stddev_pkg_j(0), stddev_core_j(0), stddev_dram_j(0),
         min_pkg_j(1e9), max_pkg_j(0) {}
 };
@@ -181,6 +186,12 @@ public:
         stats.avg_time_s /= n;
         stats.avg_power_w /= n;
         
+        // Store totals
+        stats.total_pkg_j = stats.avg_pkg_j * n;
+        stats.total_core_j = stats.avg_core_j * n;
+        stats.total_dram_j = stats.avg_dram_j * n;
+        stats.total_time_s = stats.avg_time_s * n;
+        
         // Compute standard deviations
         double var_pkg = 0, var_core = 0, var_dram = 0;
         for (size_t i = 0; i < n; i++) {
@@ -209,7 +220,7 @@ public:
         std::cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
         
         std::cout << std::fixed << std::setprecision(6);
-        std::cout << "ENERGY CONSUMPTION:\n";
+        std::cout << "ENERGY CONSUMPTION (PER ITERATION):\n";
         std::cout << "  Package:  " << std::setw(12) << stats.avg_pkg_j << " ± " 
                   << std::setw(10) << stats.stddev_pkg_j << " J  "
                   << "(min: " << stats.min_pkg_j << " J, max: " << stats.max_pkg_j << " J)\n";
@@ -217,6 +228,11 @@ public:
                   << std::setw(10) << stats.stddev_core_j << " J\n";
         std::cout << "  DRAM:     " << std::setw(12) << stats.avg_dram_j << " ± " 
                   << std::setw(10) << stats.stddev_dram_j << " J\n\n";
+        
+        std::cout << "TOTAL ENERGY CONSUMPTION:\n";
+        std::cout << "  Package:  " << std::setw(12) << stats.total_pkg_j << " J\n";
+        std::cout << "  Core:     " << std::setw(12) << stats.total_core_j << " J\n";
+        std::cout << "  DRAM:     " << std::setw(12) << stats.total_dram_j << " J\n\n";
         
         std::cout << "POWER:\n";
         std::cout << "  Average:  " << std::setw(12) << stats.avg_power_w << " W\n";
@@ -273,16 +289,18 @@ public:
         
         // Write header
         fprintf(f, "Kernel,Samples,AvgPackage_J,StdDevPackage_J,AvgCore_J,StdDevCore_J,"
-                   "AvgDRAM_J,StdDevDRAM_J,AvgTime_s,AvgPower_W,MinPackage_J,MaxPackage_J,CV_Percent\n");
+                   "AvgDRAM_J,StdDevDRAM_J,TotalPackage_J,TotalCore_J,TotalDRAM_J,TotalTime_s,"
+                   "AvgTime_s,AvgPower_W,MinPackage_J,MaxPackage_J,CV_Percent\n");
         
         // Write data
         for (const auto& stats : all_stats) {
             double cv = (stats.avg_pkg_j > 0) ? (stats.stddev_pkg_j / stats.avg_pkg_j * 100.0) : 0.0;
-            fprintf(f, "%s,%zu,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.2f\n",
+            fprintf(f, "%s,%zu,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.2f\n",
                     stats.kernel_name.c_str(), stats.pkg_j.size(),
                     stats.avg_pkg_j, stats.stddev_pkg_j,
                     stats.avg_core_j, stats.stddev_core_j,
                     stats.avg_dram_j, stats.stddev_dram_j,
+                    stats.total_pkg_j, stats.total_core_j, stats.total_dram_j, stats.total_time_s,
                     stats.avg_time_s, stats.avg_power_w,
                     stats.min_pkg_j, stats.max_pkg_j, cv);
         }
