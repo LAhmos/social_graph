@@ -22,6 +22,43 @@ import re
 import sys
 from pathlib import Path
 
+def parse_energy_file(filepath):
+    """Parse energy summary CSV file and extract configuration info and app name."""
+    # Extract configuration from filename
+    filename = os.path.basename(filepath)
+    
+    # Pattern for benchmark results files: <app>_<operation>_<config>_energy_summary.csv
+    # E.g., post_create_mt4_pool_energy_summary.csv, uniqueID_compose_ispc_energy_summary.csv
+    # Try ISPC pattern first (no mode): <app>_<operation>_ispc_energy_summary.csv
+    match = re.search(r'(\w+)_(\w+)_ispc_energy_summary\.csv', filename)
+    if match:
+        app_name = match.group(1)       # e.g., "post", "user", "uniqueID"
+        operation = match.group(2)      # e.g., "create", "lookup", "compose"
+        config = 'ispc'
+        
+        # Read CSV, skipping comment lines
+        df = pd.read_csv(filepath, comment='#')
+        
+        return app_name, operation, config, df
+    
+    # Try MT pattern with mode: <app>_<operation>_<mtN>_<mode>_energy_summary.csv
+    match = re.search(r'(\w+)_(\w+)_(mt\d+)_(pool|spawn)_energy_summary\.csv', filename)
+    if match:
+        app_name = match.group(1)       # e.g., "post", "user", "uniqueID"
+        operation = match.group(2)      # e.g., "create", "lookup", "compose"
+        config = match.group(3)         # e.g., "mt4", "mt8"
+        mode = match.group(4)           # e.g., "pool", "spawn"
+        
+        # Combine config and mode for MT configurations
+        config = f"{config}_{mode}"
+        
+        # Read CSV, skipping comment lines
+        df = pd.read_csv(filepath, comment='#')
+        
+        return app_name, operation, config, df
+    
+    return None, None, None, None
+
 def parse_timing_file(filepath):
     """Parse timing stats CSV file and extract configuration info and app name."""
     # Extract configuration from filename
@@ -759,6 +796,538 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
     
     print(f"{'='*80}\n")
 
+def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', output_dir='.'):
+    """
+    Generate a grouped bar chart showing throughput for each app operation.
+    Throughput is calculated as operations per second based on the mean latency.
+    
+    Args:
+        app_data: Nested dict of app_name -> operation -> batch_size -> config -> df
+        batch_size: The batch size to plot throughput for
+        metric: The metric to compute throughput on ('ExecutionTime', 'TotalLatency', etc.)
+        output_dir: Directory to save the plot
+    """
+    
+    def sort_key(x):
+        # Sort mt1_spawn first, then others
+        if x == 'mt1_spawn':
+            return (-1, 0, '')
+        elif x == 'ispc':
+            return (0, 0, '')
+        elif x.startswith('mt'):
+            parts = x.replace('mt', '').split('_')
+            threads = int(parts[0]) if parts[0] else 0
+            mode = parts[1] if len(parts) > 1 else ''
+            return (1, threads, mode)
+        else:
+            return (2, 0, x)
+    
+    # Collect throughput data for each app+operation combination
+    throughput_data = {}  # (app_name, operation) -> {config: throughput_value}
+    
+    for app_name in sorted(app_data.keys()):
+        operation_data = app_data[app_name]
+        
+        # Process all operations with data for this batch size
+        for operation in sorted(operation_data.keys()):
+            if batch_size in operation_data[operation]:
+                data_dict = operation_data[operation][batch_size]
+                
+                # Get all configurations for this app+operation and sort them
+                configs = sorted(data_dict.keys(), key=sort_key)
+                
+                # Calculate throughput for each config
+                app_op_throughputs = {}
+                for config in configs:
+                    df = data_dict[config]
+                    if metric not in df.columns:
+                        continue
+                    
+                    # Mean latency in cycles
+                    config_mean = np.mean(df[metric].values)
+                    
+                    # Throughput = operations per cycle
+                    # For better readability, multiply by a constant (e.g., 1e6 for ops per million cycles)
+                    # Or convert to operations per second if we know CPU frequency
+                    # Here we use ops per million cycles for CPU-cycle based metrics
+                    throughput = 1e6 / config_mean  # ops per million cycles
+                    app_op_throughputs[config] = throughput
+                
+                if app_op_throughputs:
+                    throughput_data[(app_name, operation)] = app_op_throughputs
+    
+    if not throughput_data:
+        print(f"⚠️  No throughput data to plot for N={batch_size}")
+        return
+    
+    # Prepare data for plotting
+    app_ops = sorted(throughput_data.keys())  # List of (app_name, operation) tuples
+    
+    # Get all unique configs across all app+operations
+    all_configs = set()
+    for app_op_throughputs in throughput_data.values():
+        all_configs.update(app_op_throughputs.keys())
+    configs = sorted(all_configs, key=sort_key)
+    
+    # Create bar chart - make it wider to accommodate more groups
+    fig, ax = plt.subplots(figsize=(max(16, len(app_ops) * 1.5), 8))
+    
+    # Bar width and positions
+    bar_width = 0.15
+    num_configs = len(configs)
+    
+    # Generate colors
+    colors = plt.cm.tab10(np.linspace(0, 1, num_configs))
+    
+    # X positions for each app+operation group with spacing between them
+    spacing_factor = 2.5  # Increase this for more spacing
+    x_pos = np.arange(len(app_ops)) * spacing_factor
+    
+    # Plot bars for each configuration
+    for config_idx, config in enumerate(configs):
+        throughputs = []
+        for app_op in app_ops:
+            if config in throughput_data[app_op]:
+                throughputs.append(throughput_data[app_op][config])
+            else:
+                throughputs.append(0)  # No data for this config
+        
+        # Create label
+        if config == 'ispc':
+            label = 'ISPC SIMD'
+        elif config.startswith('mt'):
+            parts = config.replace('mt', '').split('_')
+            threads = parts[0] if parts[0] else '?'
+            mode = parts[1] if len(parts) > 1 else ''
+            # Highlight baseline
+            if config == 'mt1_spawn':
+                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
+            else:
+                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+        else:
+            label = config
+        
+        # Position offset for this configuration
+        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        
+        ax.bar(x_pos + offset, throughputs, bar_width, 
+               label=label, color=colors[config_idx], alpha=0.8)
+    
+    # Formatting
+    ax.set_xlabel('Application / Operation', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Throughput (ops per million cycles)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Throughput Comparison Across Applications and Operations for N={batch_size}\n{metric} (Higher is Better)', 
+                 fontsize=16, fontweight='bold')
+    ax.set_xticks(x_pos)
+    # Create labels like "post/create", "post/lookup", etc.
+    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    ax.set_xticklabels(x_labels, fontsize=11, rotation=45, ha='right')
+    ax.legend(fontsize=10, loc='upper left', ncol=2)
+    ax.grid(True, alpha=0.3, linestyle='--', axis='y')
+    
+    # Set y-axis to start at 0
+    ax.set_ylim(bottom=0)
+    
+    plt.tight_layout()
+    
+    # Save plot
+    output_path_pdf = os.path.join(output_dir, f'throughput_grouped_by_app_{metric.lower()}_N{batch_size}.pdf')
+    plt.savefig(output_path_pdf, bbox_inches='tight')
+    print(f"✅ Saved throughput plot: {output_path_pdf}")
+    
+    plt.close()
+    
+    # Also create interactive HTML version
+    fig_interactive = go.Figure()
+    
+    # Plot bars for each configuration
+    for config_idx, config in enumerate(configs):
+        throughputs = []
+        hover_texts = []
+        for app_op in app_ops:
+            app, operation = app_op
+            if config in throughput_data[app_op]:
+                throughput = throughput_data[app_op][config]
+                throughputs.append(throughput)
+                hover_texts.append(f'{app}/{operation}<br>Config: {config}<br>Throughput: {throughput:.2f} ops/Mcycles')
+            else:
+                throughputs.append(0)
+                hover_texts.append(f'{app}/{operation}<br>No data')
+        
+        # Create label
+        if config == 'ispc':
+            label = 'ISPC SIMD'
+        elif config.startswith('mt'):
+            parts = config.replace('mt', '').split('_')
+            threads = parts[0] if parts[0] else '?'
+            mode = parts[1] if len(parts) > 1 else ''
+            if config == 'mt1_spawn':
+                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
+            else:
+                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+        else:
+            label = config
+        
+        # Position offset for this configuration
+        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        x_positions = x_pos + offset
+        
+        fig_interactive.add_trace(go.Bar(
+            x=x_positions,
+            y=throughputs,
+            name=label,
+            width=bar_width,
+            text=[f'{t:.1f}' if t > 0 else '' for t in throughputs],
+            textposition='outside',
+            hovertext=hover_texts,
+            hoverinfo='text'
+        ))
+    
+    # Update layout
+    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    fig_interactive.update_layout(
+        title=f'Throughput Comparison Across Applications and Operations for N={batch_size}<br>{metric} (Higher is Better)',
+        xaxis=dict(
+            title='Application / Operation',
+            tickmode='array',
+            tickvals=x_pos,
+            ticktext=x_labels,
+            tickangle=45
+        ),
+        yaxis=dict(
+            title='Throughput (ops per million cycles)',
+            rangemode='tozero'
+        ),
+        barmode='group',
+        hovermode='closest',
+        template='plotly_white',
+        width=max(1600, len(app_ops) * 150),
+        height=800,
+        font=dict(size=11),
+        legend=dict(
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=0.01
+        ),
+        showlegend=True
+    )
+    
+    # Save interactive HTML version
+    output_path_html = os.path.join(output_dir, f'throughput_grouped_by_app_{metric.lower()}_N{batch_size}.html')
+    fig_interactive.write_html(output_path_html)
+    print(f"✅ Saved interactive throughput plot: {output_path_html}")
+    
+    # Print throughput statistics
+    print(f"\n{'='*80}")
+    print(f"THROUGHPUT STATISTICS FOR N={batch_size} - {metric}")
+    print(f"{'='*80}")
+    print(f"{'App/Operation':<25} {'Config':<20} {'Throughput':>15}")
+    print(f"{'-'*80}")
+    
+    for app_op in app_ops:
+        app, operation = app_op
+        app_op_throughputs = throughput_data[app_op]
+        for config in sorted(app_op_throughputs.keys(), key=sort_key):
+            throughput = app_op_throughputs[config]
+            
+            if config == 'ispc':
+                label = 'ISPC'
+            elif config.startswith('mt'):
+                parts = config.replace('mt', '').split('_')
+                threads = parts[0] if parts[0] else '?'
+                mode = parts[1] if len(parts) > 1 else ''
+                label = f'MT-{threads}({mode})' if mode else f'MT-{threads}'
+            else:
+                label = config
+            
+            app_op_label = f'{app}/{operation}'
+            print(f"{app_op_label:<25} {label:<20} {throughput:>15.2f} ops/Mcycles")
+        print(f"{'-'*55}")
+    
+    print(f"{'='*80}\n")
+
+def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', output_dir='.'):
+    """
+    Generate a grouped bar chart showing normalized energy for each app operation.
+    Each app+operation has a group of bars, with the baseline (mt1_spawn) at 1.0x.
+    
+    Args:
+        energy_data: Nested dict of app_name -> operation -> config -> df
+        metric: The energy metric to plot ('TotalPackage_J', 'TotalCore_J', 'TotalDRAM_J', 'AvgPackage_J')
+        output_dir: Directory to save the plot
+    """
+    
+    def sort_key(x):
+        # Sort mt1_spawn first (baseline), then others
+        if x == 'mt1_spawn':
+            return (-1, 0, '')
+        elif x == 'ispc':
+            return (0, 0, '')
+        elif x.startswith('mt'):
+            parts = x.replace('mt', '').split('_')
+            threads = int(parts[0]) if parts[0] else 0
+            mode = parts[1] if len(parts) > 1 else ''
+            return (1, threads, mode)
+        else:
+            return (2, 0, x)
+    
+    # Collect normalized energy data for each app+operation combination
+    normalized_energy_data = {}  # (app_name, operation) -> {config: normalized_value}
+    baseline_energies = {}  # (app_name, operation) -> baseline_energy
+    
+    for app_name in sorted(energy_data.keys()):
+        operation_data = energy_data[app_name]
+        
+        # Process all operations
+        for operation in sorted(operation_data.keys()):
+            config_data = operation_data[operation]
+            
+            # Look for mt1_spawn as baseline
+            baseline_config = 'mt1_spawn'
+            if baseline_config not in config_data:
+                print(f"⚠️  Warning: Baseline '{baseline_config}' not found for {app_name}/{operation}, skipping")
+                continue
+            
+            baseline_df = config_data[baseline_config]
+            
+            if metric not in baseline_df.columns:
+                print(f"⚠️  Warning: Metric '{metric}' not found in baseline for {app_name}/{operation}")
+                continue
+            
+            # Get baseline energy (use first row since energy summary has one row per config)
+            baseline_energy = baseline_df[metric].iloc[0] if len(baseline_df) > 0 else 0
+            if baseline_energy == 0:
+                print(f"⚠️  Warning: Baseline energy is 0 for {app_name}/{operation}, skipping")
+                continue
+                
+            baseline_energies[(app_name, operation)] = baseline_energy
+            
+            # Get all configurations for this app+operation and sort them
+            configs = sorted(config_data.keys(), key=sort_key)
+            
+            # Calculate normalized energy for each config
+            app_op_normalized = {}
+            for config in configs:
+                df = config_data[config]
+                if metric not in df.columns:
+                    continue
+                
+                config_energy = df[metric].iloc[0] if len(df) > 0 else 0
+                # Normalized energy: higher means more energy consumed (worse)
+                normalized = config_energy / baseline_energy
+                app_op_normalized[config] = normalized
+            
+            normalized_energy_data[(app_name, operation)] = app_op_normalized
+    
+    if not normalized_energy_data:
+        print(f"⚠️  No normalized energy data to plot")
+        return
+    
+    # Prepare data for plotting
+    app_ops = sorted(normalized_energy_data.keys())  # List of (app_name, operation) tuples
+    
+    # Get all unique configs across all app+operations
+    all_configs = set()
+    for app_op_normalized in normalized_energy_data.values():
+        all_configs.update(app_op_normalized.keys())
+    configs = sorted(all_configs, key=sort_key)
+    
+    # Create bar chart - make it wider to accommodate more groups
+    fig, ax = plt.subplots(figsize=(max(16, len(app_ops) * 1.5), 8))
+    
+    # Bar width and positions
+    bar_width = 0.15
+    num_configs = len(configs)
+    
+    # Generate colors
+    colors = plt.cm.tab10(np.linspace(0, 1, num_configs))
+    
+    # X positions for each app+operation group with spacing between them
+    spacing_factor = 2.5  # Increase this for more spacing
+    x_pos = np.arange(len(app_ops)) * spacing_factor
+    
+    # Plot bars for each configuration
+    for config_idx, config in enumerate(configs):
+        normalized_values = []
+        for app_op in app_ops:
+            if config in normalized_energy_data[app_op]:
+                normalized_values.append(normalized_energy_data[app_op][config])
+            else:
+                normalized_values.append(0)  # No data for this config
+        
+        # Create label
+        if config == 'ispc':
+            label = 'ISPC SIMD'
+        elif config.startswith('mt'):
+            parts = config.replace('mt', '').split('_')
+            threads = parts[0] if parts[0] else '?'
+            mode = parts[1] if len(parts) > 1 else ''
+            # Highlight baseline
+            if config == 'mt1_spawn':
+                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
+            else:
+                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+        else:
+            label = config
+        
+        # Position offset for this configuration
+        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        
+        ax.bar(x_pos + offset, normalized_values, bar_width, 
+               label=label, color=colors[config_idx], alpha=0.8)
+    
+    # Add horizontal line at 1.0x (baseline)
+    ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Baseline (1.0x)')
+    
+    # Formatting
+    ax.set_xlabel('Application / Operation', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Normalized Energy (relative to baseline)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Normalized Energy Comparison Across Applications and Operations\n{metric} (Lower is Better)', 
+                 fontsize=16, fontweight='bold')
+    ax.set_xticks(x_pos)
+    # Create labels like "post/create", "post/lookup", etc.
+    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    ax.set_xticklabels(x_labels, fontsize=11, rotation=45, ha='right')
+    ax.legend(fontsize=10, loc='upper left', ncol=2)
+    ax.grid(True, alpha=0.3, linestyle='--', axis='y')
+    
+    # Set y-axis to start at 0
+    ax.set_ylim(bottom=0)
+    
+    plt.tight_layout()
+    
+    # Save plot
+    output_path_pdf = os.path.join(output_dir, f'normalized_energy_grouped_by_app_{metric.lower()}.pdf')
+    plt.savefig(output_path_pdf, bbox_inches='tight')
+    print(f"✅ Saved normalized energy plot: {output_path_pdf}")
+    
+    plt.close()
+    
+    # Also create interactive HTML version
+    fig_interactive = go.Figure()
+    
+    # Plot bars for each configuration
+    for config_idx, config in enumerate(configs):
+        normalized_values = []
+        hover_texts = []
+        for app_op in app_ops:
+            app, operation = app_op
+            if config in normalized_energy_data[app_op]:
+                normalized = normalized_energy_data[app_op][config]
+                normalized_values.append(normalized)
+                hover_texts.append(f'{app}/{operation}<br>Config: {config}<br>Normalized Energy: {normalized:.3f}x')
+            else:
+                normalized_values.append(0)
+                hover_texts.append(f'{app}/{operation}<br>No data')
+        
+        # Create label
+        if config == 'ispc':
+            label = 'ISPC SIMD'
+        elif config.startswith('mt'):
+            parts = config.replace('mt', '').split('_')
+            threads = parts[0] if parts[0] else '?'
+            mode = parts[1] if len(parts) > 1 else ''
+            if config == 'mt1_spawn':
+                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
+            else:
+                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+        else:
+            label = config
+        
+        # Position offset for this configuration
+        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        x_positions = x_pos + offset
+        
+        fig_interactive.add_trace(go.Bar(
+            x=x_positions,
+            y=normalized_values,
+            name=label,
+            width=bar_width,
+            text=[f'{n:.2f}x' if n > 0 else '' for n in normalized_values],
+            textposition='outside',
+            hovertext=hover_texts,
+            hoverinfo='text'
+        ))
+    
+    # Add baseline line
+    fig_interactive.add_hline(
+        y=1.0,
+        line_dash="dash",
+        line_color="red",
+        line_width=2,
+        opacity=0.7,
+        annotation_text="Baseline (1.0x)",
+        annotation_position="top left"
+    )
+    
+    # Update layout
+    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    fig_interactive.update_layout(
+        title=f'Normalized Energy Comparison Across Applications and Operations<br>{metric} (Lower is Better)',
+        xaxis=dict(
+            title='Application / Operation',
+            tickmode='array',
+            tickvals=x_pos,
+            ticktext=x_labels,
+            tickangle=45
+        ),
+        yaxis=dict(
+            title='Normalized Energy (relative to baseline)',
+            rangemode='tozero'
+        ),
+        barmode='group',
+        hovermode='closest',
+        template='plotly_white',
+        width=max(1600, len(app_ops) * 150),
+        height=800,
+        font=dict(size=11),
+        legend=dict(
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=0.01
+        ),
+        showlegend=True
+    )
+    
+    # Save interactive HTML version
+    output_path_html = os.path.join(output_dir, f'normalized_energy_grouped_by_app_{metric.lower()}.html')
+    fig_interactive.write_html(output_path_html)
+    print(f"✅ Saved interactive normalized energy plot: {output_path_html}")
+    
+    # Print normalized energy statistics
+    print(f"\n{'='*80}")
+    print(f"NORMALIZED ENERGY STATISTICS - {metric}")
+    print(f"{'='*80}")
+    print(f"{'App/Operation':<25} {'Config':<20} {'Normalized':>12} {'Absolute (J)':>15}")
+    print(f"{'-'*80}")
+    
+    for app_op in app_ops:
+        app, operation = app_op
+        app_op_normalized = normalized_energy_data[app_op]
+        baseline_energy = baseline_energies[app_op]
+        
+        for config in sorted(app_op_normalized.keys(), key=sort_key):
+            normalized = app_op_normalized[config]
+            absolute_energy = normalized * baseline_energy
+            
+            if config == 'ispc':
+                label = 'ISPC'
+            elif config.startswith('mt'):
+                parts = config.replace('mt', '').split('_')
+                threads = parts[0] if parts[0] else '?'
+                mode = parts[1] if len(parts) > 1 else ''
+                label = f'MT-{threads}({mode})' if mode else f'MT-{threads}'
+            else:
+                label = config
+            
+            app_op_label = f'{app}/{operation}'
+            print(f"{app_op_label:<25} {label:<20} {normalized:>12.3f}x {absolute_energy:>15.6f}")
+        print(f"{'-'*55}")
+    
+    print(f"{'='*80}\n")
+
 def generate_index_html(output_dir, app_data, batch_sizes):
     """
     Generate an index.html file with links to all interactive plots.
@@ -938,7 +1507,7 @@ def generate_index_html(output_dir, app_data, batch_sizes):
             📊 Batch Size: N={batch_size}
         </div>
         
-        <h3>⚡ Speedup Comparison</h3>
+        <h3>⚡ Speedup, Throughput & Energy Comparison</h3>
         <div class="plot-grid">
             <div class="plot-card speedup-card">
                 <div class="icon">📈</div>
@@ -947,6 +1516,28 @@ def generate_index_html(output_dir, app_data, batch_sizes):
                 </a>
                 <div class="description">
                     Interactive bar chart comparing speedup across all applications and operations relative to MT-1 (spawn) baseline
+                </div>
+            </div>
+            <div class="plot-card speedup-card">
+                <div class="icon">⚡</div>
+                <a href="throughput_grouped_by_app_totallatency_N{batch_size}.html" target="_blank">
+                    Throughput by Application & Operation
+                </a>
+                <div class="description">
+                    Interactive bar chart showing throughput (ops per million cycles) across all applications and operations
+                </div>
+            </div>
+        </div>
+        
+        <h3>🔋 Energy Efficiency Comparison</h3>
+        <div class="plot-grid">
+            <div class="plot-card speedup-card">
+                <div class="icon">🔋</div>
+                <a href="normalized_energy_grouped_by_app_totalcore_j.html" target="_blank">
+                    Normalized Energy by Application & Operation
+                </a>
+                <div class="description">
+                    Interactive bar chart comparing normalized core energy consumption across all applications and operations relative to MT-1 (spawn) baseline (Lower is Better)
                 </div>
             </div>
         </div>
@@ -1034,6 +1625,16 @@ def main():
     
     print(f"📁 Found {len(files)} timing stats files")
     
+    # Find all energy summary files
+    energy_pattern_direct = os.path.join(search_dir, '*_energy_summary.csv')
+    energy_pattern_recursive = os.path.join(search_dir, '**/*_energy_summary.csv')
+    
+    energy_files = (glob.glob(energy_pattern_direct) + 
+                    glob.glob(energy_pattern_recursive, recursive=True))
+    energy_files = list(set(energy_files))  # Remove duplicates
+    
+    print(f"🔋 Found {len(energy_files)} energy summary files")
+    
     # Group files by app, operation, and batch size
     app_data = {}  # app_name -> operation -> batch_size -> config -> df
     
@@ -1055,6 +1656,25 @@ def main():
         
         app_data[app_name][operation][batch_size][config] = df
         print(f"  ✅ Loaded {app_name}/{operation}/{config} for N={batch_size} ({len(df)} data points)")
+    
+    # Group energy files by app, operation, and config
+    energy_data = {}  # app_name -> operation -> config -> df
+    
+    for filepath in energy_files:
+        app_name, operation, config, df = parse_energy_file(filepath)
+        
+        if app_name is None:
+            print(f"⚠️  Skipping energy file (couldn't parse): {os.path.basename(filepath)}")
+            continue
+        
+        if app_name not in energy_data:
+            energy_data[app_name] = {}
+        
+        if operation not in energy_data[app_name]:
+            energy_data[app_name][operation] = {}
+        
+        energy_data[app_name][operation][config] = df
+        print(f"  🔋 Loaded energy {app_name}/{operation}/{config}")
     
     # Create output directory for plots in the search directory
     output_dir = os.path.join(search_dir, 'cdf_plots')
@@ -1104,11 +1724,34 @@ def main():
         print(f"{'-'*80}")
         plot_speedup_grouped_by_app(app_data, batch_size, 'TotalLatency', output_dir)
     
+    # Generate throughput plots grouped by app for each batch size
+    print(f"\n{'#'*80}")
+    print(f"# GENERATING THROUGHPUT PLOTS")
+    print(f"{'#'*80}")
+    
+    for batch_size in sorted(all_batch_sizes):
+        print(f"\n{'-'*80}")
+        print(f"Generating throughput plot for N={batch_size}")
+        print(f"{'-'*80}")
+        plot_throughput_grouped_by_app(app_data, batch_size, 'TotalLatency', output_dir)
+    
+    # Generate normalized energy plots if energy data is available
+    if energy_data:
+        print(f"\n{'#'*80}")
+        print(f"# GENERATING NORMALIZED ENERGY PLOTS")
+        print(f"{'#'*80}")
+        print(f"\n{'-'*80}")
+        print(f"Generating normalized energy plot")
+        print(f"{'-'*80}")
+        plot_normalized_energy_grouped_by_app(energy_data, 'TotalCore_J', output_dir)
+    else:
+        print(f"\n⚠️  No energy data found, skipping energy plots")
+    
     # Generate dynamic index.html
     generate_index_html(output_dir, app_data, sorted(all_batch_sizes))
     
     print(f"\n{'='*80}")
-    print(f"✅ All CDF and speedup plots generated successfully!")
+    print(f"✅ All CDF, speedup, throughput, and energy plots generated successfully!")
     print(f"📁 Plots saved in: {output_dir}")
     print(f"📊 Apps processed: {', '.join(sorted(app_data.keys()))}")
     print(f"🌐 Open index.html in your browser to view all interactive plots")
