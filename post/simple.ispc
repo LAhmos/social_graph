@@ -1,6 +1,8 @@
 #define MAX_ENTRIES   4096
 #define MAX_POST_LEN  128
 #define MAX_RESULTS   16   // max posts returned per user
+#define HASH_TABLE_SIZE 8192  // Hash table size (power of 2)
+#define MAX_POSTS_PER_USER 64  // Maximum posts tracked per user in hash table
 
 //--------------------------------------------------
 // Data structures
@@ -15,10 +17,15 @@ export struct PostMap {
     uniform int   user_ids[MAX_ENTRIES];
     uniform Post  posts[MAX_ENTRIES];
     uniform int   next_slot;
+    
+    // Hash table for O(1) lookup: maps user_id hash -> first post index
+    // Each entry stores: [first_post_idx, count]
+    uniform int   hashTable[HASH_TABLE_SIZE][2];  // [0]=first_idx, [1]=count (-1 means empty)
+    uniform int   postIndices[MAX_ENTRIES];  // Linked list of post indices for same user
 };
 
 //--------------------------------------------------
-// Insert post into PostMap (like multimap)
+// Insert post into PostMap (like multimap) with hash table
 //--------------------------------------------------
 inline void insert_post(uniform PostMap &map,
                          int user_id,
@@ -34,6 +41,7 @@ inline void insert_post(uniform PostMap &map,
     map.user_ids[slot] = user_id;
     map.posts[slot].user_id = user_id;
     map.posts[slot].post_id = post_id;
+    map.postIndices[slot] = -1;  // Initialize as end of list
 
     // Copy post text (truncate if needed)
     for (uniform int j = 0; j < MAX_POST_LEN; j++) {
@@ -41,8 +49,47 @@ inline void insert_post(uniform PostMap &map,
         if (post_text[j] == 0) break;
     }
 
-    if (programIndex == 0)
-        print("Inserted post % for user %\n", post_id, user_id);
+    // Update hash table - use user_id directly as hash
+    varying int hash_idx = user_id & (HASH_TABLE_SIZE - 1);
+    
+    // Try to insert into hash table with linear probing
+    for (uniform int probe = 0; probe < 8; ++probe) {
+        varying int current_first = map.hashTable[hash_idx][0];
+        varying int current_count = map.hashTable[hash_idx][1];
+        
+        if (current_first == -1) {
+            // Empty slot - try to claim it
+            varying int expected = -1;
+            varying int old_val = atomic_compare_exchange_global(&map.hashTable[hash_idx][0], expected, slot);
+            if (old_val == -1) {
+                // Successfully claimed - initialize count
+                atomic_add_global(&map.hashTable[hash_idx][1], 1);
+                break;
+            }
+        } else {
+            // Slot occupied - check if it's for same user
+            varying int stored_user = map.user_ids[current_first];
+            if (stored_user == user_id) {
+                // Same user - add to linked list by making this post point to old first
+                map.postIndices[slot] = current_first;
+                // Try to update first pointer atomically
+                varying int old_first = atomic_compare_exchange_global(&map.hashTable[hash_idx][0], current_first, slot);
+                if (old_first == current_first) {
+                    // Successfully updated
+                    atomic_add_global(&map.hashTable[hash_idx][1], 1);
+                    break;
+                }
+                // If failed, retry
+                continue;
+            }
+        }
+        
+        // Collision with different user - try next slot
+        hash_idx = (hash_idx + 1) & (HASH_TABLE_SIZE - 1);
+    }
+
+    // if (programIndex == 0)
+    //     print("Inserted post % for user %\n", post_id, user_id);
 }
 inline int64 generate_unique_id(
     uniform  uint8 machine_id[],
@@ -170,13 +217,13 @@ return id_value;
 }
 
 //--------------------------------------------------
-// Batch kernel: each lane posts one message
+// Batch kernel: each lane posts one message (SoA version)
 //--------------------------------------------------
 export void newPost_batch(uniform PostMap &map,
                             uniform  uint8 machine_id[],
                             uniform int machine_len,
                           uniform const int user_ids[],
-                          uniform const uint8 post_texts[], // [N * MAX_POST_LEN]
+                          uniform const uint8 * uniform post_texts[], // SoA: [MAX_POST_LEN][N]
                           uniform int64 post_ids[],          // [N]
                           uniform int N,
                           uniform int64 lane_start_times[],  // [N] - output (actual execution start)
@@ -187,14 +234,61 @@ export void newPost_batch(uniform PostMap &map,
     global_start_time = clock();
     
     foreach (i = 0 ... N) {
-            // Record when this lane actually starts (includes queueing delay)
-            int64 actual_start_time = clock();
+        // Record when this lane actually starts (includes queueing delay)
+        int64 actual_start_time = clock();
+        
+        int user_id = user_ids[i];
+        int64 post_id = generate_unique_id(machine_id, machine_len, i);
+        
+        // Inline post insertion with SoA access
+        if (map.next_slot < MAX_ENTRIES) {
+            varying int inc = 1;
+            varying int slot = atomic_add_global(&map.next_slot, inc);
             
-            int user_id = user_ids[i];
-            uint8 *post_txt = &post_texts[i * MAX_POST_LEN];
-            int64 post_id = generate_unique_id(machine_id, machine_len,i); // can come from UploadUniqueId()
-
-        insert_post(map, user_id, post_txt, post_id);
+            if (slot < MAX_ENTRIES) {
+                // Fill entry
+                map.user_ids[slot] = user_id;
+                map.posts[slot].user_id = user_id;
+                map.posts[slot].post_id = post_id;
+                map.postIndices[slot] = -1;
+                
+                // Copy post text from SoA layout
+                for (uniform int j = 0; j < MAX_POST_LEN; j++) {
+                    varying uint8 ch = post_texts[j][i];
+                    map.posts[slot].post_string[j] = ch;
+                    if (ch == 0) break;
+                }
+                
+                // Update hash table
+                varying int hash_idx = user_id & (HASH_TABLE_SIZE - 1);
+                
+                for (uniform int probe = 0; probe < 8; ++probe) {
+                    varying int current_first = map.hashTable[hash_idx][0];
+                    
+                    if (current_first == -1) {
+                        varying int expected = -1;
+                        varying int old_val = atomic_compare_exchange_global(&map.hashTable[hash_idx][0], expected, slot);
+                        if (old_val == -1) {
+                            atomic_add_global(&map.hashTable[hash_idx][1], 1);
+                            break;
+                        }
+                    } else {
+                        varying int stored_user = map.user_ids[current_first];
+                        if (stored_user == user_id) {
+                            map.postIndices[slot] = current_first;
+                            varying int old_first = atomic_compare_exchange_global(&map.hashTable[hash_idx][0], current_first, slot);
+                            if (old_first == current_first) {
+                                atomic_add_global(&map.hashTable[hash_idx][1], 1);
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                    
+                    hash_idx = (hash_idx + 1) & (HASH_TABLE_SIZE - 1);
+                }
+            }
+        }
         
         int64 end_time = clock();
         lane_start_times[i] = actual_start_time;
@@ -224,10 +318,36 @@ export void getPostByUser_batch(uniform const PostMap &map,
         // Each lane will write its results to its region in out_posts
         uniform uint8 *dst = &out_posts[i * MAX_RESULTS * MAX_POST_LEN];
 
-        for (uniform int j = 0; j < map.next_slot; j++) {
-            if (map.user_ids[j] == query_id) {
-                // copy post text to this lane's result region
-                uniform uint8 *src = &map.posts[j].post_string[0];
+        // Use hash table for O(1) lookup
+        varying int hash_idx = query_id & (HASH_TABLE_SIZE - 1);
+        varying int first_post_idx = -1;
+        
+        // Linear probing to find the user's posts
+        for (uniform int probe = 0; probe < 8; ++probe) {
+            varying int candidate_idx = map.hashTable[hash_idx][0];
+            if (candidate_idx == -1) {
+                // Empty slot - user has no posts
+                break;
+            }
+            
+            // Check if this is the right user
+            varying int stored_user = map.user_ids[candidate_idx];
+            if (stored_user == query_id) {
+                // Found the user's posts
+                first_post_idx = candidate_idx;
+                break;
+            }
+            
+            // Collision - try next slot
+            hash_idx = (hash_idx + 1) & (HASH_TABLE_SIZE - 1);
+        }
+        
+        // Follow the linked list of posts for this user
+        if (first_post_idx != -1) {
+            varying int current_idx = first_post_idx;
+            while (current_idx != -1 && found < MAX_RESULTS) {
+                // Copy post text to this lane's result region
+                uniform uint8 *src = &map.posts[current_idx].post_string[0];
                 uniform uint8 *dst_post = &dst[found * MAX_POST_LEN];
 
                 for (uniform int k = 0; k < MAX_POST_LEN; k++) {
@@ -236,7 +356,9 @@ export void getPostByUser_batch(uniform const PostMap &map,
                 }
 
                 found++;
-                if (found >= MAX_RESULTS) break;
+                
+                // Move to next post in linked list
+                current_idx = map.postIndices[current_idx];
             }
         }
 

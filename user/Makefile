@@ -6,46 +6,45 @@
 CXX      := g++
 ISPC     := ispc
 TARGET   := simple
-TARGET_PTHREAD := simple_pthread
 ISPC_SRC := simple.ispc
 CPP_SRC  := simple.cpp
-CPP_PTHREAD_SRC := simple_pthread.cpp
 ISPC_OBJ := simple_ispc.o
 ISPC_HDR := simple_ispc.h
+MT_HDR   := simple_mt.h
 
-CXXFLAGS := -O3
-CXXFLAGS_PTHREAD := -O3 -pthread
+CXXFLAGS := -O3 -std=c++11 -pthread
 ISPCFLAGS := --target=avx2-i32x8 -O3 --PIC
 
 # =========================================================
 # Build rules
 # =========================================================
 
-all: $(TARGET) $(TARGET_PTHREAD)
+all: $(TARGET)
 
 $(ISPC_OBJ): $(ISPC_SRC)
 	$(ISPC) $(ISPC_SRC) $(ISPCFLAGS) -h $(ISPC_HDR) -o $(ISPC_OBJ)
 
-$(TARGET): $(CPP_SRC) $(ISPC_OBJ)
+$(TARGET): $(CPP_SRC) $(ISPC_OBJ) $(MT_HDR)
 	$(CXX) $(CXXFLAGS) $(CPP_SRC) $(ISPC_OBJ) -o $(TARGET)
 
-$(TARGET_PTHREAD): $(CPP_PTHREAD_SRC)
-	$(CXX) $(CXXFLAGS_PTHREAD) $(CPP_PTHREAD_SRC) -o $(TARGET_PTHREAD)
-
 clean:
-	rm -f $(TARGET) $(TARGET_PTHREAD) $(ISPC_OBJ) $(ISPC_HDR)
+	rm -f $(TARGET) $(ISPC_OBJ) $(ISPC_HDR) *.csv
 
 run: $(TARGET)
 	./$(TARGET)
 
-run_pthread: $(TARGET_PTHREAD)
-	./$(TARGET_PTHREAD)
+run_ispc: $(TARGET)
+	./$(TARGET) ispc
 
-compare: $(TARGET) $(TARGET_PTHREAD)
-	@echo "Running ISPC version..."
-	./$(TARGET)
-	@echo ""
-	@echo "Running pthread version..."
-	./$(TARGET_PTHREAD)
-	@echo ""
-	@echo "Comparison complete. Check timing_stats.csv and timing_stats_pthread.csv"
+run_mt: $(TARGET)
+	./$(TARGET) mt
+
+run_mt8: $(TARGET)
+	./$(TARGET) mt 8
+
+# Benchmark targets
+bench_ispc: $(TARGET)
+	./$(TARGET) ispc 100
+
+bench_mt: $(TARGET)
+	./$(TARGET) mt 8 100

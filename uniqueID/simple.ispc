@@ -72,7 +72,7 @@ export void UploadUniqueIdBatch(uniform uint8 machine_id[],  // e.g., "gpu01"
         uniform int stride = 32; // size of each record
 
 varying uintptr_t dst = (varying uintptr_t)(&out_buf[0]) + (varying uintptr_t)(i * stride);
-print("lane % dst %\n", i, (varying uint8*)dst);
+//print("lane % dst %\n", i, (varying uint8*)dst);
     
 
         // Copy machine_id

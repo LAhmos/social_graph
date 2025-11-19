@@ -14,6 +14,7 @@
 #include <chrono>
 #include <iomanip>
 #include <numeric>
+#include <cmath>
 #include <string.h>
 using namespace std;
 
@@ -21,7 +22,10 @@ using namespace std;
 #include "simple_ispc.h"
 using namespace ispc;
 
-constexpr int MAX_TEXT_LEN = 256;
+// Include multithreaded version
+#include "simple_mt.h"
+
+// Use MAX_TEXT_LEN from simple_mt.h
 
 // Helper function to read texts from CSV
 vector<string> readTextsFromCSV(const string& filename, int max_lines = -1) {
@@ -60,7 +64,9 @@ vector<string> readTextsFromCSV(const string& filename, int max_lines = -1) {
     return texts;
 }
 
-void printResults(const vector<TextResult>& results, 
+// Print results for AoS (Array of Structures) layout (used by MT version)
+template<typename TextResultType>
+void printResults(const vector<TextResultType>& results, 
                   const vector<string>& original_texts,
                   int num_to_show = 3) {
     cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
@@ -100,31 +106,104 @@ void printResults(const vector<TextResult>& results,
     }
 }
 
+// Print results for SoA (Structure of Arrays) layout (used by ISPC version)
+void printResultsSoA(const vector<int>& num_mentions,
+                     const vector<int>& num_urls,
+                     const vector<uint8_t>& updated_text,
+                     const vector<uint8_t>& mentions,
+                     const vector<uint8_t>& urls,
+                     const vector<uint8_t>& shortened_urls,
+                     const vector<string>& original_texts,
+                     int num_to_show = 3) {
+    cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    cout << "║                    SAMPLE RESULTS                                ║\n";
+    cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    int N = num_mentions.size();
+    int to_show = min(num_to_show, N);
+    
+    for (int i = 0; i < to_show; i++) {
+        cout << "--- Text " << i << " ---\n";
+        
+        // Show truncated original
+        string orig_truncated = original_texts[i].substr(0, 80);
+        if (original_texts[i].length() > 80) orig_truncated += "...";
+        cout << "Original: " << orig_truncated << "\n";
+        
+        // Show truncated updated - INTERLEAVED layout: char j of text i at j*N+i
+        char updated_buf[MAX_TEXT_LEN + 1];
+        for (int j = 0; j < MAX_TEXT_LEN; j++) {
+            updated_buf[j] = updated_text[j * N + i];
+            if (updated_buf[j] == 0) break;
+        }
+        updated_buf[MAX_TEXT_LEN] = 0;
+        string updated_str(updated_buf);
+        string updated_truncated = updated_str.substr(0, 80);
+        if (updated_str.length() > 80) updated_truncated += "...";
+        cout << "Updated:  " << updated_truncated << "\n";
+        
+        cout << "Mentions (" << num_mentions[i] << "):";
+        for (int j = 0; j < num_mentions[i]; j++) {
+            // INTERLEAVED: byte k of mention j for text i at (j*64+k)*N+i
+            char mention_buf[65];
+            for (int k = 0; k < 64; k++) {
+                mention_buf[k] = mentions[(j * 64 + k) * N + i];
+                if (mention_buf[k] == 0) break;
+            }
+            mention_buf[64] = 0;
+            cout << " @" << mention_buf;
+        }
+        cout << "\n";
+        
+        cout << "URLs (" << num_urls[i] << "):\n";
+        for (int j = 0; j < num_urls[i]; j++) {
+            // INTERLEAVED: byte k of URL j for text i at (j*MAX_URL_LEN+k)*N+i
+            char url_buf[MAX_URL_LEN + 1];
+            for (int k = 0; k < MAX_URL_LEN; k++) {
+                url_buf[k] = urls[(j * MAX_URL_LEN + k) * N + i];
+                if (url_buf[k] == 0) break;
+            }
+            url_buf[MAX_URL_LEN] = 0;
+            cout << "  Original: " << url_buf << "\n";
+            
+            char short_url_buf[MAX_URL_LEN + 1];
+            for (int k = 0; k < MAX_URL_LEN; k++) {
+                short_url_buf[k] = shortened_urls[(j * MAX_URL_LEN + k) * N + i];
+                if (short_url_buf[k] == 0) break;
+            }
+            short_url_buf[MAX_URL_LEN] = 0;
+            cout << "  Shortened: " << short_url_buf << "\n";
+        }
+        cout << "\n";
+    }
+}
+
 void exportTimingStats(const string& filename,
-                       const vector<int64_t>& lane_starts,
-                       const vector<int64_t>& lane_ends,
-                       int64_t global_start) {
+                       const vector<double>& avg_queue_delays,
+                       const vector<double>& avg_exec_times,
+                       const vector<double>& avg_total_latencies) {
     ofstream csv(filename);
     csv << "Operation,Lane,QueueingDelay,ExecutionTime,TotalLatency\n";
     
-    for (size_t i = 0; i < lane_starts.size(); i++) {
-        int64_t queue_delay = lane_starts[i] - global_start;
-        int64_t exec_time = lane_ends[i] - lane_starts[i];
-        int64_t total_latency = lane_ends[i] - global_start;
-        
+    for (size_t i = 0; i < avg_queue_delays.size(); i++) {
         csv << "TextProcessing," << i << "," 
-            << queue_delay << "," << exec_time << "," << total_latency << "\n";
+            << fixed << setprecision(1)
+            << avg_queue_delays[i] << "," << avg_exec_times[i] << "," 
+            << avg_total_latencies[i] << "\n";
     }
     
     csv.close();
 }
 
+// Export throughput stats for AoS layout (MT version)
+template<typename TextResultType>
 void exportThroughputStats(const string& filename,
                            int num_texts,
                            double elapsed_us,
-                           const vector<int64_t>& lane_starts,
-                           const vector<int64_t>& lane_ends,
-                           const vector<TextResult>& results) {
+                           const vector<double>& avg_queue_delays,
+                           const vector<double>& avg_exec_times,
+                           const vector<double>& avg_total_latencies,
+                           const vector<TextResultType>& results) {
     ofstream csv(filename);
     
     // Overall metrics
@@ -138,27 +217,67 @@ void exportThroughputStats(const string& filename,
     csv << "TextProcessing,AvgLatencyPerText," << fixed << setprecision(2) << avg_latency << ",nanoseconds\n";
     csv << "\n";
     
-    // Per-lane timing breakdown
+    // Per-lane averaged timing breakdown
     csv << "Operation,Lane,AvgQueueDelay,AvgExecTime,AvgTotalLatency,Unit\n";
     
-    int64_t global_start = lane_starts[0];
-    for (size_t i = 0; i < lane_starts.size(); i++) {
-        int64_t queue_delay = lane_starts[i] - global_start;
-        int64_t exec_time = lane_ends[i] - lane_starts[i];
-        int64_t total_latency = lane_ends[i] - global_start;
-        
+    for (size_t i = 0; i < avg_queue_delays.size(); i++) {
         csv << "TextProcessing," << i << "," 
-            << queue_delay << "," << exec_time << "," << total_latency << ",cycles\n";
+            << fixed << setprecision(1)
+            << avg_queue_delays[i] << "," << avg_exec_times[i] << "," 
+            << avg_total_latencies[i] << ",cycles\n";
     }
     csv << "\n";
     
     // Per-lane workload
-    csv << "Operation,Lane,Mentions,URLs,ExecTime,Unit\n";
+    csv << "Operation,Lane,Mentions,URLs,AvgExecTime,Unit\n";
     for (size_t i = 0; i < results.size(); i++) {
-        int64_t exec_time = lane_ends[i] - lane_starts[i];
         csv << "TextProcessing," << i << "," 
             << results[i].num_mentions << "," << results[i].num_urls << "," 
-            << exec_time << ",cycles\n";
+            << fixed << setprecision(1) << avg_exec_times[i] << ",cycles\n";
+    }
+    
+    csv.close();
+}
+
+// Export throughput stats for SoA layout (ISPC version)
+void exportThroughputStatsSoA(const string& filename,
+                              int num_texts,
+                              double elapsed_us,
+                              const vector<double>& avg_queue_delays,
+                              const vector<double>& avg_exec_times,
+                              const vector<double>& avg_total_latencies,
+                              const vector<int>& num_mentions,
+                              const vector<int>& num_urls) {
+    ofstream csv(filename);
+    
+    // Overall metrics
+    double throughput = (num_texts / elapsed_us) * 1e6; // texts/sec
+    double avg_latency = (elapsed_us * 1000.0) / num_texts; // ns/text
+    
+    csv << "Operation,Metric,Value,Unit\n";
+    csv << "TextProcessing,BatchSize," << num_texts << ",texts\n";
+    csv << "TextProcessing,TotalTime," << (int)elapsed_us << ",microseconds\n";
+    csv << "TextProcessing,Throughput," << fixed << setprecision(2) << throughput << ",texts/sec\n";
+    csv << "TextProcessing,AvgLatencyPerText," << fixed << setprecision(2) << avg_latency << ",nanoseconds\n";
+    csv << "\n";
+    
+    // Per-lane averaged timing breakdown
+    csv << "Operation,Lane,AvgQueueDelay,AvgExecTime,AvgTotalLatency,Unit\n";
+    
+    for (size_t i = 0; i < avg_queue_delays.size(); i++) {
+        csv << "TextProcessing," << i << "," 
+            << fixed << setprecision(1)
+            << avg_queue_delays[i] << "," << avg_exec_times[i] << "," 
+            << avg_total_latencies[i] << ",cycles\n";
+    }
+    csv << "\n";
+    
+    // Per-lane workload for SoA
+    csv << "Operation,Lane,Mentions,URLs,AvgExecTime,Unit\n";
+    for (size_t i = 0; i < num_mentions.size(); i++) {
+        csv << "TextProcessing," << i << "," 
+            << num_mentions[i] << "," << num_urls[i] << "," 
+            << fixed << setprecision(1) << avg_exec_times[i] << ",cycles\n";
     }
     
     csv.close();
@@ -166,12 +285,68 @@ void exportThroughputStats(const string& filename,
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        cerr << "Usage: " << argv[0] << " <csv_file> <num_lines>\n";
+        cerr << "Usage: " << argv[0] << " <csv_file> <num_lines> [mt] [num_threads] [mt_mode] [iterations]\n";
+        cerr << "  csv_file:    Input CSV file with texts\n";
+        cerr << "  num_lines:   Number of lines to process\n";
+        cerr << "  mt:          Use multithreaded mode (optional, default is ISPC)\n";
+        cerr << "  num_threads: Number of threads (optional for mt mode, default=auto)\n";
+        cerr << "  mt_mode:     'pool' or 'spawn' (optional for mt mode, default='pool')\n";
+        cerr << "  iterations:  Benchmark iterations (optional, default=50)\n";
         return 1;
     }
     
     string filename = argv[1];
     int num_lines = atoi(argv[2]);
+    bool use_ispc = true;
+    int num_threads = 0;
+    string mt_mode = "pool";
+    int warmup_iters = 5;   // Warm-up iterations
+    int bench_iters = 50;   // Benchmark iterations
+    
+    // Check for multithreaded mode
+    if (argc > 3) {
+        string mode = argv[3];
+        if (mode == "mt" || mode == "multithreaded") {
+            use_ispc = false;
+            if (argc > 4) {
+                num_threads = atoi(argv[4]);
+            }
+            if (argc > 5) {
+                mt_mode = argv[5];
+            }
+            if (argc > 6) {
+                bench_iters = atoi(argv[6]);
+            }
+        }
+    }
+    
+    // Validate mt_mode
+    if (mt_mode != "pool" && mt_mode != "spawn") {
+        cerr << "Error: mt_mode must be 'pool' or 'spawn'\n";
+        return 1;
+    }
+    
+    string mode_name = use_ispc ? "ISPC SIMD" : ("Multithreaded (" + mt_mode + ")");
+    cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
+    cout << "║  TEXT PROCESSING SERVICE                                         ║\n";
+    cout << "╠══════════════════════════════════════════════════════════════════╣\n";
+    cout << "║  Mode: " << mode_name << string(58 - mode_name.length(), ' ') << "║\n";
+    if (!use_ispc && num_threads > 0) {
+        cout << "║  Threads: " << num_threads << string(55 - to_string(num_threads).length(), ' ') << "║\n";
+    } else if (!use_ispc) {
+        cout << "║  Threads: Auto-detect                                          ║\n";
+    }
+    cout << "║  Warmup Iterations: " << warmup_iters << string(45 - to_string(warmup_iters).length(), ' ') << "║\n";
+    cout << "║  Benchmark Iterations: " << bench_iters << string(42 - to_string(bench_iters).length(), ' ') << "║\n";
+    cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
+    
+    // Initialize thread pool for multithreaded mode
+    ThreadPool::Mode pool_mode = (mt_mode == "spawn") ? ThreadPool::SPAWN_MODE : ThreadPool::POOL_MODE;
+    if (!use_ispc) {
+        cout << "🔧 Initializing thread pool with " << (num_threads > 0 ? num_threads : thread::hardware_concurrency()) << " threads (" << mt_mode << " mode)...\n";
+        mt::InitThreadPool(num_threads, pool_mode);
+        cout << "✅ Thread pool ready\n\n";
+    }
     
     cout << "Reading texts from file...\n";
     vector<string> texts = readTextsFromCSV(filename, num_lines);
@@ -185,45 +360,259 @@ int main(int argc, char* argv[]) {
     cout << "Processing " << N << " texts...\n";
     
     // Flatten texts into byte array
+    // For ISPC: use INTERLEAVED layout for contiguous SIMD access
+    // For MT: use standard sequential layout
     vector<uint8_t> texts_flat(N * MAX_TEXT_LEN, 0);
-    for (int i = 0; i < N; i++) {
-        strncpy((char*)&texts_flat[i * MAX_TEXT_LEN], texts[i].c_str(), MAX_TEXT_LEN - 1);
+    
+    if (use_ispc) {
+        // FULLY INTERLEAVED LAYOUT across ALL N texts:
+        // Layout: [text0[0], text1[0], ..., textN-1[0], text0[1], text1[1], ..., textN-1[1], ...]
+        // Character j of text i is at: j * N + i
+        // This allows consecutive texts to be loaded with a single vector instruction!
+        
+        for (int char_pos = 0; char_pos < MAX_TEXT_LEN; char_pos++) {
+            for (int text_id = 0; text_id < N; text_id++) {
+                int dest_offset = char_pos * N + text_id;
+                
+                if (char_pos < (int)texts[text_id].length()) {
+                    texts_flat[dest_offset] = texts[text_id][char_pos];
+                } else {
+                    texts_flat[dest_offset] = 0;
+                }
+            }
+        }
+        cout << "✅ Data transformed to FULLY INTERLEAVED layout (stride=" << N << ")\n";
+    } else {
+        // SEQUENTIAL LAYOUT for MT version
+        for (int i = 0; i < N; i++) {
+            strncpy((char*)&texts_flat[i * MAX_TEXT_LEN], texts[i].c_str(), MAX_TEXT_LEN - 1);
+        }
     }
     
-    // Prepare output structures
-    vector<TextResult> results(N);
+    // Prepare output structures (use appropriate type based on mode)
+    // For ISPC: Use SoA (Structure of Arrays) layout for better vectorization
+    vector<int> ispc_num_mentions(N, 0);
+    vector<int> ispc_num_urls(N, 0);
+    vector<uint8_t> ispc_updated_text(N * MAX_TEXT_LEN, 0);
+    vector<uint8_t> ispc_mentions(N * MAX_MENTIONS * 64, 0);
+    vector<uint8_t> ispc_urls(N * MAX_URLS * MAX_URL_LEN, 0);
+    vector<uint8_t> ispc_shortened_urls(N * MAX_URLS * MAX_URL_LEN, 0);
+    
+    // For MT: Keep AoS (Array of Structures) layout
+    vector<mt::TextResult> mt_results;
+    
     vector<int64_t> lane_start_times(N, 0);
     vector<int64_t> lane_end_times(N, 0);
     int64_t global_start_time = 0;
     
-    // Process texts
-    cout << "\n=== Processing Texts with ISPC ===\n";
+    // Accumulators for averaging timing across iterations
+    vector<double> avg_queue_delay(N, 0.0);
+    vector<double> avg_exec_time(N, 0.0);
+    vector<double> avg_total_latency(N, 0.0);
     
-    auto start = chrono::high_resolution_clock::now();
+    if (!use_ispc) {
+        mt_results.resize(N);
+    }
     
-    ispc::processText_batch(
-        texts_flat.data(),
-        N,
-        results.data(),
-        lane_start_times.data(),
-        lane_end_times.data(),
-        global_start_time
-    );
+    // ---------------------------------------------------------
+    // WARM-UP PHASE
+    // ---------------------------------------------------------
+    cout << "🔥 Warming up: " << warmup_iters << " iterations...\n";
+    for (int w = 0; w < warmup_iters; w++) {
+        if (use_ispc) {
+            // Create SoA structure for ISPC
+            ispc::TextResult ispc_soa;
+            ispc_soa.num_mentions = ispc_num_mentions.data();
+            ispc_soa.num_urls = ispc_num_urls.data();
+            ispc_soa.updated_text = ispc_updated_text.data();
+            ispc_soa.mentions = ispc_mentions.data();
+            ispc_soa.urls = ispc_urls.data();
+            ispc_soa.shortened_urls = ispc_shortened_urls.data();
+            
+            ispc::processText_batch(
+                texts_flat.data(),
+                N,
+                ispc_soa,
+                lane_start_times.data(),
+                lane_end_times.data(),
+                global_start_time
+            );
+        } else {
+            mt::processText_batch(
+                texts_flat.data(),
+                N,
+                mt_results.data(),
+                lane_start_times.data(),
+                lane_end_times.data(),
+                global_start_time,
+                num_threads
+            );
+        }
+    }
+    cout << "✅ Warm-up complete\n\n";
+
+    // ---------------------------------------------------------
+    // BENCHMARK PHASE
+    // ---------------------------------------------------------
+    cout << "📊 Benchmarking: " << bench_iters << " iterations...\n";
+    vector<int64_t> time_measurements_us;
     
-    auto end = chrono::high_resolution_clock::now();
-    auto elapsed_us = chrono::duration_cast<chrono::microseconds>(end - start).count();
-    auto elapsed_ns = chrono::duration_cast<chrono::nanoseconds>(end - start).count();
+    for (int iter = 0; iter < bench_iters; iter++) {
+        auto start = chrono::high_resolution_clock::now();
+        
+        if (use_ispc) {
+            // Create SoA structure for ISPC
+            ispc::TextResult ispc_soa;
+            ispc_soa.num_mentions = ispc_num_mentions.data();
+            ispc_soa.num_urls = ispc_num_urls.data();
+            ispc_soa.updated_text = ispc_updated_text.data();
+            ispc_soa.mentions = ispc_mentions.data();
+            ispc_soa.urls = ispc_urls.data();
+            ispc_soa.shortened_urls = ispc_shortened_urls.data();
+            
+            ispc::processText_batch(
+                texts_flat.data(),
+                N,
+                ispc_soa,
+                lane_start_times.data(),
+                lane_end_times.data(),
+                global_start_time
+            );
+        } else {
+            mt::processText_batch(
+                texts_flat.data(),
+                N,
+                mt_results.data(),
+                lane_start_times.data(),
+                lane_end_times.data(),
+                global_start_time,
+                num_threads
+            );
+        }
+        
+        auto end = chrono::high_resolution_clock::now();
+        auto duration = chrono::duration_cast<chrono::microseconds>(end - start);
+        time_measurements_us.push_back(duration.count());
+        
+        // Accumulate relative timing metrics for this iteration
+        for (int i = 0; i < N; i++) {
+            int64_t queue_delay = lane_start_times[i] - global_start_time;
+            int64_t exec_time = lane_end_times[i] - lane_start_times[i];
+            int64_t total_latency = lane_end_times[i] - global_start_time;
+            
+            avg_queue_delay[i] += queue_delay;
+            avg_exec_time[i] += exec_time;
+            avg_total_latency[i] += total_latency;
+        }
+        
+        // Progress indicator
+        if (bench_iters >= 20 && (iter + 1) % (bench_iters / 10) == 0) {
+            cout << "  Progress: " << (iter + 1) << "/" << bench_iters << "\n";
+        }
+    }
+    
+    // Calculate averages
+    for (int i = 0; i < N; i++) {
+        avg_queue_delay[i] /= bench_iters;
+        avg_exec_time[i] /= bench_iters;
+        avg_total_latency[i] /= bench_iters;
+    }
+    
+    cout << "✅ Benchmarking complete\n\n";
+    
+    // Calculate statistics
+    sort(time_measurements_us.begin(), time_measurements_us.end());
+    int64_t min_time = time_measurements_us.front();
+    int64_t max_time = time_measurements_us.back();
+    int64_t median_time = time_measurements_us[bench_iters / 2];
+    int64_t mean_time = 0;
+    for (auto t : time_measurements_us) mean_time += t;
+    mean_time /= bench_iters;
+    
+    double stddev = 0;
+    for (auto t : time_measurements_us) {
+        stddev += (t - mean_time) * (t - mean_time);
+    }
+    stddev = sqrt(stddev / bench_iters);
+    double cv = (stddev / mean_time) * 100.0;
+    
+    // Final detailed run for per-lane analysis
+    cout << "\n=== Running final detailed analysis ===\n";
+    auto start_final = chrono::high_resolution_clock::now();
+    
+    if (use_ispc) {
+        // Create SoA structure for ISPC
+        ispc::TextResult ispc_soa;
+        ispc_soa.num_mentions = ispc_num_mentions.data();
+        ispc_soa.num_urls = ispc_num_urls.data();
+        ispc_soa.updated_text = ispc_updated_text.data();
+        ispc_soa.mentions = ispc_mentions.data();
+        ispc_soa.urls = ispc_urls.data();
+        ispc_soa.shortened_urls = ispc_shortened_urls.data();
+        
+        ispc::processText_batch(
+            texts_flat.data(),
+            N,
+            ispc_soa,
+            lane_start_times.data(),
+            lane_end_times.data(),
+            global_start_time
+        );
+    } else {
+        mt::processText_batch(
+            texts_flat.data(),
+            N,
+            mt_results.data(),
+            lane_start_times.data(),
+            lane_end_times.data(),
+            global_start_time,
+            num_threads
+        );
+    }
+    
+    auto end_final = chrono::high_resolution_clock::now();
+    auto elapsed_us = chrono::duration_cast<chrono::microseconds>(end_final - start_final).count();
+    auto elapsed_ns = chrono::duration_cast<chrono::nanoseconds>(end_final - start_final).count();
+    
+    cout << "Final run completed in " << elapsed_us << " µs\n";
     
     // Performance stats
     cout << "\n╔══════════════════════════════════════════════════════════════════╗\n";
-    cout << "║              TEXT PROCESSING PERFORMANCE                         ║\n";
+    cout << "║  BENCHMARK RESULTS - processText_batch (N=" << N << ")";
+    cout << string(71 - to_string(N).length() - 44, ' ') << "║\n";
     cout << "╚══════════════════════════════════════════════════════════════════╝\n\n";
     
-    cout << "Texts processed: " << N << "\n";
-    cout << "Execution time: " << elapsed_us << " μs (" << elapsed_ns << " ns)\n";
+    cout << "WALL-CLOCK TIME:\n";
+    cout << "  Min:      " << setw(12) << min_time << " µs\n";
+    cout << "  Median:   " << setw(12) << median_time << " µs  ⭐\n";
+    cout << "  Mean:     " << setw(12) << mean_time << " µs\n";
+    cout << "  Max:      " << setw(12) << max_time << " µs\n";
+    cout << "  Stddev:   " << setw(12) << fixed << setprecision(2) << stddev << " µs\n";
+    cout << "  CV:       " << setw(12) << fixed << setprecision(2) << cv << " %\n\n";
+    
+    cout << "PERFORMANCE METRICS (based on median):\n";
+    cout << "  Texts processed:  " << N << "\n";
+    cout << "  Median time:      " << median_time << " µs\n";
     cout << fixed << setprecision(2);
-    cout << "Throughput: " << (N / (elapsed_us / 1e6)) << " texts/sec\n";
-    cout << "Average latency: " << (elapsed_ns / (double)N) << " ns/text\n";
+    cout << "  Throughput:       " << (N * 1000000.0 / median_time) << " texts/sec\n";
+    cout << "  Average latency:  " << (median_time * 1000.0 / (double)N) << " ns/text\n\n";
+    
+    // Benchmark quality assessment
+    if (cv < 3.0) {
+        cout << "BENCHMARK QUALITY: ✅ EXCELLENT (CV < 3%)\n";
+    } else if (cv < 5.0) {
+        cout << "BENCHMARK QUALITY: ✅ GOOD (CV < 5%)\n";
+    } else if (cv < 10.0) {
+        cout << "BENCHMARK QUALITY: ⚠️  MODERATE (CV 5-10%)\n";
+    } else {
+        cout << "BENCHMARK QUALITY: ❌ NOISY (CV > 10%)\n";
+    }
+    cout << "\n";
+    
+    cout << "FINAL RUN RESULTS:\n";
+    cout << "  Execution time:   " << elapsed_us << " µs (" << elapsed_ns << " ns)\n";
+    cout << "  Throughput:       " << (N / (elapsed_us / 1e6)) << " texts/sec\n";
+    cout << "  Average latency:  " << (elapsed_ns / (double)N) << " ns/text\n";
     
     // Per-lane timing breakdown
     cout << "\n--- Per-Lane Timing (CPU clock cycles) ---\n";
@@ -236,12 +625,15 @@ int main(int argc, char* argv[]) {
         int64_t exec_time = lane_end_times[i] - lane_start_times[i];
         int64_t total_latency = lane_end_times[i] - global_start_time;
         
+        int num_mentions = use_ispc ? ispc_num_mentions[i] : mt_results[i].num_mentions;
+        int num_urls = use_ispc ? ispc_num_urls[i] : mt_results[i].num_urls;
+        
         cout << setw(4) << i << " | "
              << setw(11) << queue_delay << " | "
              << setw(10) << exec_time << " | "
              << setw(13) << total_latency << " | "
-             << setw(8) << results[i].num_mentions << " | "
-             << setw(4) << results[i].num_urls << "\n";
+             << setw(8) << num_mentions << " | "
+             << setw(4) << num_urls << "\n";
     }
     
     // Timing statistics
@@ -271,7 +663,12 @@ int main(int argc, char* argv[]) {
          << fixed << setprecision(1) << (100.0 * (max_exec - min_exec) / avg_exec) << "% of avg)\n";
     
     // Show sample results
-    printResults(results, texts, 3);
+    if (use_ispc) {
+        printResultsSoA(ispc_num_mentions, ispc_num_urls, ispc_updated_text, 
+                        ispc_mentions, ispc_urls, ispc_shortened_urls, texts, 3);
+    } else {
+        printResults(mt_results, texts, 3);
+    }
     
     // Summary
     cout << "╔══════════════════════════════════════════════════════════════════╗\n";
@@ -280,9 +677,16 @@ int main(int argc, char* argv[]) {
     
     int total_mentions = 0;
     int total_urls = 0;
-    for (const auto& res : results) {
-        total_mentions += res.num_mentions;
-        total_urls += res.num_urls;
+    if (use_ispc) {
+        for (int i = 0; i < N; i++) {
+            total_mentions += ispc_num_mentions[i];
+            total_urls += ispc_num_urls[i];
+        }
+    } else {
+        for (const auto& res : mt_results) {
+            total_mentions += res.num_mentions;
+            total_urls += res.num_urls;
+        }
     }
     
     cout << "Total texts processed: " << N << "\n";
@@ -293,12 +697,31 @@ int main(int argc, char* argv[]) {
     cout << "All URLs shortened successfully!\n";
     
     // Export stats
-    exportTimingStats("timing_stats.csv", lane_start_times, lane_end_times, global_start_time);
-    exportThroughputStats("throughput_stats.csv", N, elapsed_us, 
-                         lane_start_times, lane_end_times, results);
+    std::string technique = use_ispc ? "ispc" : ("mt" + std::to_string(num_threads > 0 ? num_threads : 8) + "_" + mt_mode);
+    std::string timing_filename = "timing_stats_compose_" + technique + "_N" + std::to_string(N) + ".csv";
+    std::string throughput_filename = "throughput_stats_compose_" + technique + "_N" + std::to_string(N) + ".csv";
     
-    cout << "\n✅ Timing data exported to 'timing_stats.csv'\n";
-    cout << "✅ Throughput stats exported to 'throughput_stats.csv'\n";
+    exportTimingStats(timing_filename, avg_queue_delay, avg_exec_time, avg_total_latency);
+    if (use_ispc) {
+        exportThroughputStatsSoA(throughput_filename, N, elapsed_us, 
+                                 avg_queue_delay, avg_exec_time, avg_total_latency,
+                                 ispc_num_mentions, ispc_num_urls);
+    } else {
+        exportThroughputStats(throughput_filename, N, elapsed_us, 
+                             avg_queue_delay, avg_exec_time, avg_total_latency,
+                             mt_results);
+    }
+    
+    cout << "\n✅ Timing data exported to '" << timing_filename << "'\n";
+    cout << "✅ Throughput stats exported to '" << throughput_filename << "'\n";
+    
+    // Cleanup
+    if (!use_ispc) {
+        cout << "\n🔧 Destroying thread pool...\n";
+        mt::DestroyThreadPool();
+        cout << "✅ Cleanup complete\n";
+    }
+    
     cout << "\nDone.\n";
     
     return 0;
