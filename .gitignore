@@ -6,7 +6,7 @@
 *.s
 
 # Compiled binaries (only ignore the executables, not directories)
-*/simple
+
 text/simple
 post/simple
 user/simple
