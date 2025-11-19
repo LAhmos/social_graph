@@ -12,6 +12,9 @@
 #include <iomanip>
 #include <algorithm>
 
+// Include energy measurement header
+#include "../energy_measurement.h"
+
 // Include the header file that the ispc compiler generates
 #include "simple_ispc.h"
 // Include the multithreaded version
@@ -184,6 +187,18 @@ int main(int argc, char* argv[]) {
         std::cout << "✅ Thread pool ready\n\n";
     }
 
+    // ---------------------------------------------------------
+    // 🔋 Initialize Energy Monitor
+    // ---------------------------------------------------------
+    EnergyMonitor energy_monitor;
+    if (energy_monitor.is_available()) {
+        std::cout << "🔋 Energy monitoring enabled (Intel RAPL)\n\n";
+    }
+    
+    // Energy statistics for concat_batch kernel
+    std::string energy_mode = use_ispc ? "ISPC" : ("MT_" + mt_mode);
+    EnergyStats concat_energy_stats("concat_batch_" + energy_mode);
+
     // Initialize persistent map
     URLMap ispc_map{};
     // Initialize hash table with -1 (empty)
@@ -313,6 +328,9 @@ int main(int argc, char* argv[]) {
     }
     
     for (int iter = 0; iter < bench_iters; iter++) {
+        // Start energy measurement
+        EnergyMeasurement energy_start = energy_monitor.start();
+        
         // Cycle measurement with serialization
         uint64_t cycles_start = rdtsc_start();
         
@@ -332,6 +350,12 @@ int main(int argc, char* argv[]) {
         
         auto end = std::chrono::high_resolution_clock::now();
         uint64_t cycles_end = rdtsc_end();
+        
+        // End energy measurement
+        EnergyMeasurement energy_delta = energy_monitor.end(energy_start);
+        if (energy_monitor.is_available()) {
+            EnergyMonitor::add_measurement(concat_energy_stats, energy_delta);
+        }
         
         // Store measurements
         int64_t total_cycles = cycles_end - cycles_start;
@@ -634,6 +658,22 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "\n";
+    
+    // ------------------------------------------------------------------
+    // 🔋 DISPLAY AND EXPORT ENERGY DATA
+    // ------------------------------------------------------------------
+    if (energy_monitor.is_available()) {
+        EnergyMonitor::compute_stats(concat_energy_stats);
+        EnergyMonitor::print_stats(concat_energy_stats);
+        
+        // Export energy measurements
+        std::vector<EnergyStats> all_energy_stats = {concat_energy_stats};
+        std::string energy_csv = "energy_measurements_" + technique + "_N" + std::to_string(N) + ".csv";
+        std::string energy_summary = "energy_summary_" + technique + "_N" + std::to_string(N) + ".csv";
+        
+        EnergyMonitor::export_csv(all_energy_stats, energy_csv);
+        EnergyMonitor::export_summary_csv(all_energy_stats, energy_summary);
+    }
     
     // Cleanup
     if (!use_ispc) {

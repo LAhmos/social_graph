@@ -26,6 +26,9 @@
 #include <string.h>
 using namespace std;
 
+// Include energy measurement header
+#include "../energy_measurement.h"
+
 // Include the header file that the ispc compiler generates
 #include "simple_ispc.h"
 #include "simple_optimized_ispc.h"
@@ -309,6 +312,18 @@ int main(int argc, char* argv[]) {
         std::cout << "✅ Thread pool ready\n\n";
     }
 
+    // ---------------------------------------------------------
+    // 🔋 Initialize Energy Monitor
+    // ---------------------------------------------------------
+    EnergyMonitor energy_monitor;
+    if (energy_monitor.is_available()) {
+        std::cout << "🔋 Energy monitoring enabled (Intel RAPL)\n\n";
+    }
+    
+    // Energy statistics for uniqueID generation kernel
+    string energy_mode = use_ispc ? "ISPC" : ("MT_" + mt_mode);
+    EnergyStats uniqueid_energy_stats("composeUniqueId_" + energy_mode);
+
     string machine_id;
     if (GetMachineId(&machine_id) != 0) {
 	exit(EXIT_FAILURE);
@@ -381,6 +396,9 @@ int main(int argc, char* argv[]) {
     std::vector<int64_t> time_measurements_ns;
     
     for (int iter = 0; iter < bench_iters; iter++) {
+        // Start energy measurement
+        EnergyMeasurement energy_start = energy_monitor.start();
+        
         // Cycle measurement with serialization
         uint64_t cycles_start = rdtsc_start();
         
@@ -408,6 +426,12 @@ int main(int argc, char* argv[]) {
         
         auto end = std::chrono::high_resolution_clock::now();
         uint64_t cycles_end = rdtsc_end();
+        
+        // End energy measurement
+        EnergyMeasurement energy_delta = energy_monitor.end(energy_start);
+        if (energy_monitor.is_available()) {
+            EnergyMonitor::add_measurement(uniqueid_energy_stats, energy_delta);
+        }
         
         // Store measurements
         int64_t total_cycles = cycles_end - cycles_start;
@@ -767,6 +791,22 @@ int main(int argc, char* argv[]) {
             std::cout << "   Speedup after warmup: " << std::fixed << std::setprecision(2) 
                       << speedup << "x\n";
         }
+    }
+    
+    // ------------------------------------------------------------------
+    // 🔋 DISPLAY AND EXPORT ENERGY DATA
+    // ------------------------------------------------------------------
+    if (energy_monitor.is_available()) {
+        EnergyMonitor::compute_stats(uniqueid_energy_stats);
+        EnergyMonitor::print_stats(uniqueid_energy_stats);
+        
+        // Export energy measurements
+        std::vector<EnergyStats> all_energy_stats = {uniqueid_energy_stats};
+        std::string energy_csv = "energy_measurements_" + technique + "_N" + std::to_string(N) + ".csv";
+        std::string energy_summary = "energy_summary_" + technique + "_N" + std::to_string(N) + ".csv";
+        
+        EnergyMonitor::export_csv(all_energy_stats, energy_csv);
+        EnergyMonitor::export_summary_csv(all_energy_stats, energy_summary);
     }
     
     // Cleanup
