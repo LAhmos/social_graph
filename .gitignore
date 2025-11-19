@@ -26,3 +26,5 @@ throughput_stats.csv
 benchmark_results_*/
 benchmark_run.log
 cdf_plots/
+
+*.csv
