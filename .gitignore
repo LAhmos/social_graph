@@ -5,14 +5,14 @@
 *_ispc.ll
 *.s
 
-# Compiled binaries
-simple
-text
-post
-user
-shortURL
-userTag
-uniqueID
+# Compiled binaries (only ignore the executables, not directories)
+*/simple
+text/simple
+post/simple
+user/simple
+shortURL/simple
+userTag/simple
+uniqueID/simple
 
 # Performance stats
 timing_stats.csv
