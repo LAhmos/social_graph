@@ -21,3 +21,8 @@ throughput_stats.csv
 # Empty placeholder files
 *_pthread.cpp
 *_pthread.h
+
+# Benchmark results
+benchmark_results_*/
+benchmark_run.log
+cdf_plots/
