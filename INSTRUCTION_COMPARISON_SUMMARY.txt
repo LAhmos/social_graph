@@ -1,0 +1,173 @@
+╔══════════════════════════════════════════════════════════════════╗
+║          Instruction Count Comparison Scripts - Summary          ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Created: November 17, 2025
+Purpose: Compare instruction counts between ISPC and MT implementations
+
+═══════════════════════════════════════════════════════════════════
+
+📋 FILES CREATED:
+
+1. compare_instructions.sh (18K)
+   ├─ Main benchmark script using perf stat
+   ├─ Tests all services: post, user, userTag, shortURL, text, uniqueID
+   ├─ Tests ISPC + MT (1, 4, 8, 16 threads)
+   └─ Output: instruction_comparison_YYYYMMDD_HHMMSS/
+
+2. analyze_instruction_counts.py (12K)
+   ├─ Python analysis script with pandas/matplotlib
+   ├─ Parses perf stat results
+   ├─ Generates plots and detailed reports
+   └─ Output: analysis/ subdirectory with plots and CSV
+
+3. instruction_comparison_example.sh (4.8K)
+   ├─ Quick example using just POST service
+   ├─ Demonstrates usage with fewer iterations
+   └─ Good for testing before full run
+
+4. INSTRUCTION_COMPARISON_README.md
+   ├─ Detailed documentation
+   ├─ Requirements and setup instructions
+   ├─ Troubleshooting guide
+   └─ Example output interpretation
+
+═══════════════════════════════════════════════════════════════════
+
+🚀 QUICK START:
+
+Option 1 - Quick Example (2-3 minutes):
+  $ ./instruction_comparison_example.sh
+
+Option 2 - Full Benchmark (30-45 minutes):
+  $ sudo sysctl -w kernel.perf_event_paranoid=-1
+  $ ./compare_instructions.sh
+  $ python3 analyze_instruction_counts.py instruction_comparison_*/
+
+═══════════════════════════════════════════════════════════════════
+
+📊 WHAT IT MEASURES:
+
+For each kernel implementation (ISPC and MT with different thread counts):
+  • Total instruction count
+  • CPU cycles
+  • Cache references
+  • Cache misses
+  • Instructions Per Cycle (IPC)
+  • Execution time
+
+Then calculates:
+  • MT/ISPC instruction ratio
+  • Average ratios by thread count
+  • IPC comparisons
+  • Performance per instruction
+
+═══════════════════════════════════════════════════════════════════
+
+⚙️  REQUIREMENTS:
+
+1. perf tool:
+   $ sudo apt-get install linux-tools-generic
+
+2. perf permissions:
+   $ sudo sysctl -w kernel.perf_event_paranoid=-1
+
+3. Python packages (for analysis):
+   $ pip install pandas matplotlib
+
+═══════════════════════════════════════════════════════════════════
+
+📈 OUTPUT FILES:
+
+compare_instructions.sh creates:
+  instruction_comparison_YYYYMMDD_HHMMSS/
+    ├── instruction_comparison.csv          (raw data)
+    ├── INSTRUCTION_COMPARISON_REPORT.txt   (text report)
+    ├── *_perf.txt                          (perf stat output)
+    └── *_output.txt                        (application output)
+
+analyze_instruction_counts.py creates:
+  analysis/
+    ├── instruction_analysis.csv            (processed data)
+    ├── INSTRUCTION_COMPARISON.txt          (detailed report)
+    ├── instruction_comparison.png          (instruction plots)
+    └── ipc_comparison.png                  (IPC plots)
+
+═══════════════════════════════════════════════════════════════════
+
+🔍 SERVICES TESTED:
+
+Each service is tested with both create/insert and lookup operations
+(where applicable):
+
+  1. POST        - create, lookup
+  2. USER        - create, login
+  3. USERTAG     - insert, lookup
+  4. SHORTURL    - compose
+  5. TEXT        - compose
+  6. UNIQUEID    - compose
+
+Total tests per run:
+  • 9 operations × 5 implementations = 45 tests
+  • Implementations: ISPC, MT-1, MT-4, MT-8, MT-16
+
+═══════════════════════════════════════════════════════════════════
+
+💡 UNDERSTANDING RESULTS:
+
+Instruction Ratio (MT/ISPC):
+  • 1.0x  = Same instructions
+  • >1.0x = MT uses MORE instructions (common)
+  • <1.0x = MT uses FEWER instructions (rare)
+
+Why MT typically uses more instructions:
+  1. Thread synchronization overhead (locks, atomics)
+  2. Function call overhead per thread
+  3. Thread pool management
+  4. Cache coherency operations
+  5. No SIMD (scalar vs vector operations)
+
+Example:
+  MT-4 ratio = 1.35x
+  → MT with 4 threads executes 35% more instructions than ISPC
+
+═══════════════════════════════════════════════════════════════════
+
+🎯 USE CASES:
+
+1. Research & Analysis:
+   - Understand ISPC efficiency benefits
+   - Quantify threading overhead
+   - Compare different parallelization strategies
+
+2. Optimization:
+   - Identify kernels with high overhead
+   - Guide where to focus optimization efforts
+   - Validate ISPC improvements
+
+3. Documentation:
+   - Generate figures for papers/reports
+   - Show quantitative ISPC advantages
+   - Support performance claims with data
+
+═══════════════════════════════════════════════════════════════════
+
+🐛 TROUBLESHOOTING:
+
+Problem: "perf: Permission denied"
+Solution: sudo sysctl -w kernel.perf_event_paranoid=-1
+
+Problem: "perf: command not found"
+Solution: sudo apt-get install linux-tools-generic
+
+Problem: Python import errors
+Solution: pip install pandas matplotlib
+
+Problem: No data in results
+Solution: Check if benchmarks compiled correctly (run 'make' in each dir)
+
+═══════════════════════════════════════════════════════════════════
+
+📧 For more information, see INSTRUCTION_COMPARISON_README.md
+
+═══════════════════════════════════════════════════════════════════
