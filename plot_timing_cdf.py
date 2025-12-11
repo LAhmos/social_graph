@@ -22,6 +22,63 @@ import re
 import sys
 from pathlib import Path
 
+# IEEE Conference Paper Compliance Settings
+# Set matplotlib backend and parameters for PDF generation
+plt.rcParams['pdf.fonttype'] = 42  # Embed fonts as True Type (required for IEEE)
+plt.rcParams['ps.fonttype'] = 42
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Times New Roman', 'DejaVu Sans']
+IEEE_DPI = 300  # IEEE requires minimum 300 DPI for publication quality
+IEEE_FMT = 'pdf'  # Vector format for quality
+
+# Configuration: Baseline configuration for normalization/comparison
+# Change this to use a different baseline (e.g., 'ispc', 'mt2_spawn', etc.)
+BASELINE_CONFIG = 'mt1_spawn'
+
+# Consistent color scheme across all figures
+# Maps configuration names to specific colors
+def get_config_color_map():
+    """
+    Return a consistent color mapping for all configurations.
+    This ensures ISPC, MT configurations, etc. always have the same color across all figures.
+    """
+    return {
+        'ispc': '#1f77b4',  # Blue
+        'mt1_spawn': '#ff7f0e',  # Orange (baseline)
+        'mt1_pool': '#2ca02c',  # Green
+        'mt2_spawn': '#d62728',  # Red
+        'mt2_pool': '#9467bd',  # Purple
+        'mt4_spawn': '#8c564b',  # Brown
+        'mt4_pool': '#e377c2',  # Pink
+        'mt8_spawn': '#7f7f7f',  # Gray
+        'mt8_pool': '#bcbd22',  # Yellow-green
+        'mt16_spawn': '#17becf',  # Cyan
+        'mt16_pool': '#ff9896',  # Light red
+    }
+
+def get_config_color(config, color_map=None, fallback_idx=0):
+    """
+    Get the color for a specific configuration.
+    Uses the global color map for known configs, or generates a color for unknown ones.
+    
+    Args:
+        config: Configuration name (e.g., 'ispc', 'mt8_pool')
+        color_map: Optional pre-computed color map
+        fallback_idx: Index to use for fallback color generation
+    
+    Returns:
+        Color string (hex format)
+    """
+    if color_map is None:
+        color_map = get_config_color_map()
+    
+    if config in color_map:
+        return color_map[config]
+    else:
+        # Generate a fallback color for unknown configs
+        fallback_colors = plt.cm.Set3(np.linspace(0, 1, 12))
+        return fallback_colors[fallback_idx % len(fallback_colors)]
+
 def parse_energy_file(filepath):
     """Parse energy summary CSV file and extract configuration info and app name."""
     # Extract configuration from filename
@@ -214,6 +271,18 @@ def parse_timing_file(filepath):
     
     return None, None, None, None, None
 
+def get_display_name(app_name):
+    """Map internal app names to display names for figures."""
+    display_names = {
+        'userTag': 'UserMentionService',
+        'user': 'UserService',
+        'uniqueID': 'UniqueIdService',
+        'text': 'TextService',
+        'shortURL': 'UrlShortenService',
+        'post': 'PostStorageService'
+    }
+    return display_names.get(app_name, app_name)
+
 def calculate_cdf(data):
     """Calculate CDF for given data."""
     sorted_data = np.sort(data)
@@ -247,6 +316,9 @@ def plot_cdf_for_batch_size_interactive(app_name, operation, batch_size, data_di
     
     configs = sorted(data_dict.keys(), key=sort_key)
     
+    # Get consistent color map
+    color_map = get_config_color_map()
+    
     # Create plotly figure
     fig = go.Figure()
     
@@ -273,13 +345,13 @@ def plot_cdf_for_batch_size_interactive(app_name, operation, batch_size, data_di
         else:
             label = config
         
-        # Add trace
+        # Add trace with consistent color
         fig.add_trace(go.Scatter(
             x=sorted_data,
             y=cdf,
             mode='lines',
             name=label,
-            line=dict(width=2.5),
+            line=dict(width=2.5, color=get_config_color(config, color_map)),
             hovertemplate=f'<b>{label}</b><br>{metric}: %{{x:.0f}} cycles<br>CDF: %{{y:.2%}}<extra></extra>'
         ))
     
@@ -296,7 +368,7 @@ def plot_cdf_for_batch_size_interactive(app_name, operation, batch_size, data_di
     
     # Update layout
     fig.update_layout(
-        title=f'{app_name} ({operation}): CDF of {metric} for N={batch_size}<br>Comparison Across Configurations',
+        title=f'{get_display_name(app_name)} ({operation}): CDF of {metric} for N={batch_size}<br>Comparison Across Configurations',
         xaxis_title=f'{metric} (cycles)',
         yaxis_title='CDF',
         hovermode='closest',
@@ -346,10 +418,10 @@ def plot_cdf_for_batch_size(app_name, operation, batch_size, data_dict, metric='
     
     configs = sorted(data_dict.keys(), key=sort_key)
     
-    # Define colors and styles
-    colors = plt.cm.tab10(np.linspace(0, 1, len(configs)))
+    # Get consistent color map
+    color_map = get_config_color_map()
     
-    for idx, config in enumerate(configs):
+    for config in configs:
         df = data_dict[config]
         
         # Get the metric data
@@ -372,17 +444,26 @@ def plot_cdf_for_batch_size(app_name, operation, batch_size, data_dict, metric='
         else:
             label = config
         
-        # Plot CDF
+        # Plot CDF with consistent color
         plt.plot(sorted_data, cdf, label=label, linewidth=2.5, 
-                color=colors[idx], alpha=0.8)
+                color=get_config_color(config, color_map), alpha=0.8)
     
     # Formatting
     plt.xlabel(f'{metric} (cycles)', fontsize=14, fontweight='bold')
     plt.ylabel('CDF', fontsize=14, fontweight='bold')
-    plt.title(f'{app_name} ({operation}): CDF of {metric} for N={batch_size}\nComparison Across Configurations', 
-             fontsize=16, fontweight='bold')
     plt.grid(True, alpha=0.3, linestyle='--')
-    plt.legend(fontsize=11, loc='lower right')
+    legend = plt.legend(fontsize=11, loc='lower right')
+    
+    # Make legend text bold
+    for text in legend.get_texts():
+        text.set_fontweight('bold')
+    
+    # Make tick labels bold
+    ax = plt.gca()
+    for label in ax.get_xticklabels():
+        label.set_fontweight('bold')
+    for label in ax.get_yticklabels():
+        label.set_fontweight('bold')
     
     # Add percentile lines
     for percentile in [0.5, 0.9, 0.95, 0.99]:
@@ -392,10 +473,10 @@ def plot_cdf_for_batch_size(app_name, operation, batch_size, data_dict, metric='
     
     plt.tight_layout()
     
-    # Save plot as PDF for publication quality
+    # Save plot as PDF for publication quality (IEEE-compliant: 300 DPI, embedded fonts)
     output_path_pdf = os.path.join(output_dir, f'{app_name}_{operation}_cdf_{metric.lower()}_N{batch_size}.pdf')
-    plt.savefig(output_path_pdf, bbox_inches='tight')
-    print(f"✅ Saved PDF plot: {output_path_pdf}")
+    plt.savefig(output_path_pdf, format=IEEE_FMT, dpi=IEEE_DPI, bbox_inches='tight')
+    print(f"✅ Saved IEEE-compliant PDF plot (300 DPI): {output_path_pdf}")
     
     plt.close()
 
@@ -403,6 +484,9 @@ def plot_all_metrics_subplot(app_name, operation, batch_size, data_dict, output_
     """Generate a single figure with subplots for all three metrics."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     metrics = ['QueueingDelay', 'ExecutionTime', 'TotalLatency']
+    
+    # Get consistent color map
+    color_map = get_config_color_map()
     
     # Sort configurations
     def sort_key(x):
@@ -418,12 +502,10 @@ def plot_all_metrics_subplot(app_name, operation, batch_size, data_dict, output_
     
     configs = sorted(data_dict.keys(), key=sort_key)
     
-    colors = plt.cm.tab10(np.linspace(0, 1, len(configs)))
-    
     for metric_idx, metric in enumerate(metrics):
         ax = axes[metric_idx]
         
-        for idx, config in enumerate(configs):
+        for config in configs:
             df = data_dict[config]
             
             if metric not in df.columns:
@@ -443,11 +525,10 @@ def plot_all_metrics_subplot(app_name, operation, batch_size, data_dict, output_
                 label = config
             
             ax.plot(sorted_data, cdf, label=label, linewidth=2.5, 
-                   color=colors[idx], alpha=0.8)
+                   color=get_config_color(config, color_map), alpha=0.8)
         
         ax.set_xlabel(f'{metric} (cycles)', fontsize=12, fontweight='bold')
         ax.set_ylabel('CDF', fontsize=12, fontweight='bold')
-        ax.set_title(f'{metric}', fontsize=13, fontweight='bold')
         ax.grid(True, alpha=0.3, linestyle='--')
         
         # Add percentile lines
@@ -457,21 +538,19 @@ def plot_all_metrics_subplot(app_name, operation, batch_size, data_dict, output_
         if metric_idx == 2:  # Only show legend on last subplot
             ax.legend(fontsize=10, loc='lower right')
     
-    fig.suptitle(f'{app_name} ({operation}): CDF Comparison for N={batch_size} - All Metrics', 
-                fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
     
-    # Save as PDF
+    # Save as PDF (IEEE-compliant: 300 DPI, embedded fonts)
     output_path_pdf = os.path.join(output_dir, f'{app_name}_{operation}_cdf_all_metrics_N{batch_size}.pdf')
-    plt.savefig(output_path_pdf, bbox_inches='tight')
-    print(f"✅ Saved combined PDF plot: {output_path_pdf}")
+    plt.savefig(output_path_pdf, format=IEEE_FMT, dpi=IEEE_DPI, bbox_inches='tight')
+    print(f"✅ Saved combined IEEE-compliant PDF plot (300 DPI): {output_path_pdf}")
     
     plt.close()
 
 def print_statistics(app_name, operation, batch_size, data_dict, metric='ExecutionTime'):
     """Print statistical summary for each configuration."""
     print(f"\n{'='*80}")
-    print(f"{app_name} ({operation}): STATISTICS FOR N={batch_size} - {metric}")
+    print(f"{get_display_name(app_name)} ({operation}): STATISTICS FOR N={batch_size} - {metric}")
     print(f"{'='*80}")
     print(f"{'Config':<15} {'Min':>10} {'Median':>10} {'Mean':>10} {'95th%':>10} {'99th%':>10} {'Max':>10}")
     print(f"{'-'*80}")
@@ -560,13 +639,12 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
             if batch_size in operation_data[operation]:
                 data_dict = operation_data[operation][batch_size]
                 
-                # Look for mt1_spawn as baseline
-                baseline_config = 'mt1_spawn'
-                if baseline_config not in data_dict:
-                    print(f"⚠️  Warning: Baseline '{baseline_config}' not found for {app_name}/{operation}, skipping")
+                # Look for baseline configuration
+                if BASELINE_CONFIG not in data_dict:
+                    print(f"⚠️  Warning: Baseline '{BASELINE_CONFIG}' not found for {app_name}/{operation}, skipping")
                     continue
                 
-                baseline_df = data_dict[baseline_config]
+                baseline_df = data_dict[BASELINE_CONFIG]
                 
                 if metric not in baseline_df.columns:
                     continue
@@ -610,16 +688,19 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
     bar_width = 0.15
     num_configs = len(configs)
     
-    # Generate colors
-    colors = plt.cm.tab10(np.linspace(0, 1, num_configs))
+    # Get consistent color map
+    color_map = get_config_color_map()
     
     # X positions for each app+operation group with spacing between them
     # Use spacing factor to add gaps between groups
     spacing_factor = 2.5  # Increase this for more spacing
     x_pos = np.arange(len(app_ops)) * spacing_factor
     
-    # Plot bars for each configuration
-    for config_idx, config in enumerate(configs):
+    # Plot bars for each configuration (skip baseline)
+    configs_to_plot = [c for c in configs if c != BASELINE_CONFIG]
+    num_configs_to_plot = len(configs_to_plot)
+    
+    for config_idx, config in enumerate(configs_to_plot):
         speedups = []
         for app_op in app_ops:
             if config in speedup_data[app_op]:
@@ -634,31 +715,25 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
             parts = config.replace('mt', '').split('_')
             threads = parts[0] if parts[0] else '?'
             mode = parts[1] if len(parts) > 1 else ''
-            # Highlight baseline
-            if config == 'mt1_spawn':
-                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
-            else:
-                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+            label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
         else:
             label = config
         
         # Position offset for this configuration
-        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        offset = (config_idx - num_configs_to_plot/2 + 0.5) * bar_width
         
         ax.bar(x_pos + offset, speedups, bar_width, 
-               label=label, color=colors[config_idx], alpha=0.8)
+               label=label, color=get_config_color(config, color_map), alpha=0.8)
     
     # Add horizontal line at 1.0x (baseline)
     ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Baseline (1.0x)')
     
     # Formatting
     ax.set_xlabel('Application / Operation', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Speedup (relative to baseline)', fontsize=14, fontweight='bold')
-    ax.set_title(f'Speedup Comparison Across Applications and Operations for N={batch_size}\n{metric} (Higher is Better)', 
-                 fontsize=16, fontweight='bold')
+    ax.set_ylabel('Speedup', fontsize=14, fontweight='bold')
     ax.set_xticks(x_pos)
-    # Create labels like "post/create", "post/lookup", etc.
-    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    # Create labels like "PostStorageService/create", "UserService/lookup", etc.
+    x_labels = [f'{get_display_name(app)}/{op}' for app, op in app_ops]
     ax.set_xticklabels(x_labels, fontsize=11, rotation=45, ha='right')
     ax.legend(fontsize=10, loc='upper left', ncol=2)
     ax.grid(True, alpha=0.3, linestyle='--', axis='y')
@@ -668,18 +743,18 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
     
     plt.tight_layout()
     
-    # Save plot
+    # Save plot (IEEE-compliant: 300 DPI, embedded fonts)
     output_path_pdf = os.path.join(output_dir, f'speedup_grouped_by_app_{metric.lower()}_N{batch_size}.pdf')
-    plt.savefig(output_path_pdf, bbox_inches='tight')
-    print(f"✅ Saved speedup plot: {output_path_pdf}")
+    plt.savefig(output_path_pdf, format=IEEE_FMT, dpi=IEEE_DPI, bbox_inches='tight')
+    print(f"✅ Saved IEEE-compliant speedup plot (300 DPI): {output_path_pdf}")
     
     plt.close()
     
     # Also create interactive HTML version
     fig_interactive = go.Figure()
     
-    # Plot bars for each configuration
-    for config_idx, config in enumerate(configs):
+    # Plot bars for each configuration (skip baseline)
+    for config_idx, config in enumerate(configs_to_plot):
         speedups = []
         hover_texts = []
         for app_op in app_ops:
@@ -687,10 +762,10 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
             if config in speedup_data[app_op]:
                 speedup = speedup_data[app_op][config]
                 speedups.append(speedup)
-                hover_texts.append(f'{app}/{operation}<br>Config: {config}<br>Speedup: {speedup:.3f}x')
+                hover_texts.append(f'{get_display_name(app)}/{operation}<br>Config: {config}<br>Speedup: {speedup:.3f}x')
             else:
                 speedups.append(0)
-                hover_texts.append(f'{app}/{operation}<br>No data')
+                hover_texts.append(f'{get_display_name(app)}/{operation}<br>No data')
         
         # Create label
         if config == 'ispc':
@@ -699,15 +774,12 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
             parts = config.replace('mt', '').split('_')
             threads = parts[0] if parts[0] else '?'
             mode = parts[1] if len(parts) > 1 else ''
-            if config == 'mt1_spawn':
-                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
-            else:
-                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+            label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
         else:
             label = config
         
         # Position offset for this configuration
-        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        offset = (config_idx - num_configs_to_plot/2 + 0.5) * bar_width
         x_positions = x_pos + offset
         
         fig_interactive.add_trace(go.Bar(
@@ -733,7 +805,7 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
     )
     
     # Update layout
-    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    x_labels = [f'{get_display_name(app)}/{op}' for app, op in app_ops]
     fig_interactive.update_layout(
         title=f'Speedup Comparison Across Applications and Operations for N={batch_size}<br>{metric} (Higher is Better)',
         xaxis=dict(
@@ -744,7 +816,7 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
             tickangle=45
         ),
         yaxis=dict(
-            title='Speedup (relative to baseline)',
+            title='Speedup',
             rangemode='tozero'
         ),
         barmode='group',
@@ -790,7 +862,7 @@ def plot_speedup_grouped_by_app(app_data, batch_size, metric='TotalLatency', out
             else:
                 label = config
             
-            app_op_label = f'{app}/{operation}'
+            app_op_label = f'{get_display_name(app)}/{operation}'
             print(f"{app_op_label:<25} {label:<20} {speedup:>10.3f}x")
         print(f"{'-'*55}")
     
@@ -838,6 +910,10 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
                 
                 # Calculate throughput for each config
                 app_op_throughputs = {}
+                baseline_throughput = None
+                
+                # First pass: calculate absolute throughput and find baseline
+                absolute_throughputs = {}
                 for config in configs:
                     df = data_dict[config]
                     if metric not in df.columns:
@@ -848,10 +924,19 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
                     
                     # Throughput = operations per cycle
                     # For better readability, multiply by a constant (e.g., 1e6 for ops per million cycles)
-                    # Or convert to operations per second if we know CPU frequency
-                    # Here we use ops per million cycles for CPU-cycle based metrics
                     throughput = 1e6 / config_mean  # ops per million cycles
-                    app_op_throughputs[config] = throughput
+                    absolute_throughputs[config] = throughput
+                    
+                    if config == BASELINE_CONFIG:
+                        baseline_throughput = throughput
+                
+                # Second pass: normalize by baseline
+                if baseline_throughput is not None and baseline_throughput > 0:
+                    for config, throughput in absolute_throughputs.items():
+                        app_op_throughputs[config] = throughput / baseline_throughput
+                else:
+                    # If no baseline, use absolute values
+                    app_op_throughputs = absolute_throughputs
                 
                 if app_op_throughputs:
                     throughput_data[(app_name, operation)] = app_op_throughputs
@@ -870,21 +955,26 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
     configs = sorted(all_configs, key=sort_key)
     
     # Create bar chart - make it wider to accommodate more groups
-    fig, ax = plt.subplots(figsize=(max(16, len(app_ops) * 1.5), 8))
+    fig, ax = plt.subplots(figsize=(max(16, len(app_ops) * 1.5), 4.5))
     
     # Bar width and positions
-    bar_width = 0.15
+    bar_width = 0.30
     num_configs = len(configs)
     
-    # Generate colors
-    colors = plt.cm.tab10(np.linspace(0, 1, num_configs))
+    # Get consistent color map
+    color_map = get_config_color_map()
     
     # X positions for each app+operation group with spacing between them
-    spacing_factor = 2.5  # Increase this for more spacing
+    spacing_factor = 2.3  # Increase spacing to prevent label overlap
     x_pos = np.arange(len(app_ops)) * spacing_factor
     
-    # Plot bars for each configuration
-    for config_idx, config in enumerate(configs):
+    # Plot bars for each configuration (skip baseline)
+    configs_to_plot = [c for c in configs if c != BASELINE_CONFIG]
+    num_configs_to_plot = len(configs_to_plot)
+    
+    Y_MAX = 8 # Maximum y-axis value
+    
+    for config_idx, config in enumerate(configs_to_plot):
         throughputs = []
         for app_op in app_ops:
             if config in throughput_data[app_op]:
@@ -899,60 +989,84 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
             parts = config.replace('mt', '').split('_')
             threads = parts[0] if parts[0] else '?'
             mode = parts[1] if len(parts) > 1 else ''
-            # Highlight baseline
-            if config == 'mt1_spawn':
-                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
-            else:
-                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+            label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
         else:
             label = config
         
         # Position offset for this configuration
-        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        offset = (config_idx - num_configs_to_plot/2 + 0.5) * bar_width
         
-        ax.bar(x_pos + offset, throughputs, bar_width, 
-               label=label, color=colors[config_idx], alpha=0.8)
+        # Cap display values at Y_MAX for bars
+        display_throughputs = [min(t, Y_MAX) if t > 0 else 0 for t in throughputs]
+        
+        bars = ax.bar(x_pos + offset, display_throughputs, bar_width, 
+                      label=label, color=get_config_color(config, color_map), alpha=0.8,
+                      edgecolor='black', linewidth=0.8)
+        
+        # Add text labels on top for values exceeding Y_MAX
+        for i, (actual_val, display_val) in enumerate(zip(throughputs, display_throughputs)):
+            if actual_val > Y_MAX:
+                ax.text(x_pos[i] + offset, Y_MAX, f'{actual_val:.1f}',
+                       ha='center', va='bottom', fontsize=8, fontweight='bold',
+                       rotation=0)
+    
+    # Add baseline reference line at 1.0
+    ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Baseline (1.0x)')
     
     # Formatting
     ax.set_xlabel('Application / Operation', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Throughput (ops per million cycles)', fontsize=14, fontweight='bold')
-    ax.set_title(f'Throughput Comparison Across Applications and Operations for N={batch_size}\n{metric} (Higher is Better)', 
-                 fontsize=16, fontweight='bold')
+    ax.set_ylabel('Normalized Throughput', fontsize=14, fontweight='bold')
     ax.set_xticks(x_pos)
-    # Create labels like "post/create", "post/lookup", etc.
-    x_labels = [f'{app}/{op}' for app, op in app_ops]
-    ax.set_xticklabels(x_labels, fontsize=11, rotation=45, ha='right')
-    ax.legend(fontsize=10, loc='upper left', ncol=2)
+    # Create labels with app name and operation on different lines
+    x_labels = [f'{get_display_name(app)}\n{op}' for app, op in app_ops]
+    ax.set_xticklabels(x_labels, fontsize=11, rotation=0, ha='center', fontweight='bold')
+    legend = ax.legend(fontsize=10, loc='upper left', ncol=2)
+    
+    # Make tick labels bold
+    for label in ax.get_yticklabels():
+        label.set_fontweight('bold')
+    
+    # Make legend text bold
+    for text in legend.get_texts():
+        text.set_fontweight('bold')
+    
     ax.grid(True, alpha=0.3, linestyle='--', axis='y')
     
-    # Set y-axis to start at 0
-    ax.set_ylim(bottom=0)
+    # Set y-axis range from 0 to Y_MAX
+    ax.set_ylim(bottom=0, top=Y_MAX)
     
     plt.tight_layout()
     
-    # Save plot
+    # Save plot (IEEE-compliant: 300 DPI, embedded fonts)
     output_path_pdf = os.path.join(output_dir, f'throughput_grouped_by_app_{metric.lower()}_N{batch_size}.pdf')
-    plt.savefig(output_path_pdf, bbox_inches='tight')
-    print(f"✅ Saved throughput plot: {output_path_pdf}")
+    plt.savefig(output_path_pdf, format=IEEE_FMT, dpi=IEEE_DPI, bbox_inches='tight')
+    print(f"✅ Saved IEEE-compliant throughput plot (300 DPI): {output_path_pdf}")
     
     plt.close()
     
     # Also create interactive HTML version
     fig_interactive = go.Figure()
     
-    # Plot bars for each configuration
-    for config_idx, config in enumerate(configs):
+    # Plot bars for each configuration (skip baseline)
+    for config_idx, config in enumerate(configs_to_plot):
         throughputs = []
         hover_texts = []
+        text_labels = []
         for app_op in app_ops:
             app, operation = app_op
             if config in throughput_data[app_op]:
                 throughput = throughput_data[app_op][config]
                 throughputs.append(throughput)
-                hover_texts.append(f'{app}/{operation}<br>Config: {config}<br>Throughput: {throughput:.2f} ops/Mcycles')
+                hover_texts.append(f'{get_display_name(app)}/{operation}<br>Config: {config}<br>Normalized Throughput: {throughput:.2f}x')
+                # Show text label only if exceeds Y_MAX
+                if throughput > Y_MAX:
+                    text_labels.append(f'{throughput:.1f}')
+                else:
+                    text_labels.append('')
             else:
                 throughputs.append(0)
-                hover_texts.append(f'{app}/{operation}<br>No data')
+                hover_texts.append(f'{get_display_name(app)}/{operation}<br>No data')
+                text_labels.append('')
         
         # Create label
         if config == 'ispc':
@@ -961,30 +1075,34 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
             parts = config.replace('mt', '').split('_')
             threads = parts[0] if parts[0] else '?'
             mode = parts[1] if len(parts) > 1 else ''
-            if config == 'mt1_spawn':
-                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
-            else:
-                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+            label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
         else:
             label = config
         
         # Position offset for this configuration
-        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        offset = (config_idx - num_configs_to_plot/2 + 0.5) * bar_width
         x_positions = x_pos + offset
+        
+        # Cap display values at Y_MAX
+        display_throughputs = [min(t, Y_MAX) if t > 0 else 0 for t in throughputs]
         
         fig_interactive.add_trace(go.Bar(
             x=x_positions,
-            y=throughputs,
+            y=display_throughputs,
             name=label,
             width=bar_width,
-            text=[f'{t:.1f}' if t > 0 else '' for t in throughputs],
+            text=text_labels,
             textposition='outside',
             hovertext=hover_texts,
             hoverinfo='text'
         ))
     
+    # Add baseline reference line at 1.0
+    fig_interactive.add_hline(y=1.0, line_dash="dash", line_color="red", line_width=2, 
+                              annotation_text="Baseline (1.0x)", annotation_position="right")
+    
     # Update layout
-    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    x_labels = [f'{get_display_name(app)}/{op}' for app, op in app_ops]
     fig_interactive.update_layout(
         title=f'Throughput Comparison Across Applications and Operations for N={batch_size}<br>{metric} (Higher is Better)',
         xaxis=dict(
@@ -995,8 +1113,8 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
             tickangle=45
         ),
         yaxis=dict(
-            title='Throughput (ops per million cycles)',
-            rangemode='tozero'
+            title='Normalized Throughput',
+            range=[0, Y_MAX]
         ),
         barmode='group',
         hovermode='closest',
@@ -1022,7 +1140,7 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
     print(f"\n{'='*80}")
     print(f"THROUGHPUT STATISTICS FOR N={batch_size} - {metric}")
     print(f"{'='*80}")
-    print(f"{'App/Operation':<25} {'Config':<20} {'Throughput':>15}")
+    print(f"{'App/Operation':<25} {'Config':<20} {'Norm. Throughput':>18}")
     print(f"{'-'*80}")
     
     for app_op in app_ops:
@@ -1041,11 +1159,234 @@ def plot_throughput_grouped_by_app(app_data, batch_size, metric='TotalLatency', 
             else:
                 label = config
             
-            app_op_label = f'{app}/{operation}'
-            print(f"{app_op_label:<25} {label:<20} {throughput:>15.2f} ops/Mcycles")
+            app_op_label = f'{get_display_name(app)}/{operation}'
+            print(f"{app_op_label:<25} {label:<20} {throughput:>18.2f}x")
         print(f"{'-'*55}")
     
     print(f"{'='*80}\n")
+
+def plot_all_apps_cdf_subplots(app_data, batch_size, metric='TotalLatency', output_dir='.'):
+    """
+    Generate a single figure with subplots for all app/operation combinations.
+    Each subplot shows the CDF for one app/operation at the specified batch size.
+    
+    Args:
+        app_data: Nested dict of app_name -> operation -> batch_size -> config -> df
+        batch_size: The batch size to plot
+        metric: Which metric to plot ('QueueingDelay', 'ExecutionTime', 'TotalLatency')
+        output_dir: Directory to save the plot
+    """
+    
+    def sort_key(x):
+        if x == 'ispc':
+            return (0, 0, '')
+        elif x.startswith('mt'):
+            parts = x.replace('mt', '').split('_')
+            threads = int(parts[0]) if parts[0] else 0
+            mode = parts[1] if len(parts) > 1 else ''
+            return (1, threads, mode)
+        else:
+            return (2, 0, x)
+    
+    # Collect all app/operation combinations that have data for this batch size
+    app_ops = []
+    for app_name in sorted(app_data.keys()):
+        for operation in sorted(app_data[app_name].keys()):
+            if batch_size in app_data[app_name][operation]:
+                app_ops.append((app_name, operation))
+    
+    if not app_ops:
+        print(f"⚠️  No data to plot for N={batch_size}")
+        return
+    
+    # Calculate grid dimensions (try to make it roughly square)
+    n_plots = len(app_ops)
+    n_cols = int(np.ceil(np.sqrt(n_plots)))
+    n_rows = int(np.ceil(n_plots / n_cols))
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+    
+    # Flatten axes array for easier iteration
+    if n_plots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten() if n_rows > 1 or n_cols > 1 else [axes]
+    
+    # Generate colors for configurations
+    # First, collect all unique configurations across all apps
+    all_configs = set()
+    for app_name, operation in app_ops:
+        data_dict = app_data[app_name][operation][batch_size]
+        all_configs.update(data_dict.keys())
+    
+    configs = sorted(all_configs, key=sort_key)
+    # Use consistent color map across all figures
+    color_map = get_config_color_map()
+    
+    # Plot each app/operation in its own subplot
+    # Track if we've added labels (only need once for shared legend)
+    labels_added = False
+    legend_handles = []
+    legend_labels = []
+    
+    for idx, (app_name, operation) in enumerate(app_ops):
+        ax = axes[idx]
+        data_dict = app_data[app_name][operation][batch_size]
+        
+        # Get configurations for this app/operation
+        app_configs = sorted(data_dict.keys(), key=sort_key)
+        
+        for config in app_configs:
+            df = data_dict[config]
+            
+            if metric not in df.columns:
+                continue
+            
+            data = df[metric].values
+            sorted_data, cdf = calculate_cdf(data)
+            
+            # Create label
+            if config == 'ispc':
+                label = 'ISPC'
+            elif config.startswith('mt'):
+                parts = config.replace('mt', '').split('_')
+                threads = parts[0] if parts[0] else '?'
+                mode = parts[1] if len(parts) > 1 else ''
+                label = f'MT-{threads}({mode})' if mode else f'MT-{threads}'
+            else:
+                label = config
+            
+            # Plot CDF with consistent colors across subplots (no label on individual plots)
+            line, = ax.plot(sorted_data, cdf, linewidth=2,
+                           color=color_map[config], alpha=0.8)
+            
+            # Collect handles and labels from first subplot for shared legend
+            if not labels_added and idx == 0:
+                legend_handles.append(line)
+                legend_labels.append(label)
+        
+        # Mark that we've collected labels
+        if idx == 0:
+            labels_added = True
+        
+        # Formatting for this subplot
+        ax.set_xlabel(f'{metric} (cycles)', fontsize=10, fontweight='bold')
+        ax.set_ylabel('CDF', fontsize=10, fontweight='bold')
+        ax.set_title(f'{get_display_name(app_name)} ({operation})', fontsize=10, fontweight='bold')
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Add percentile lines
+        for percentile in [0.5, 0.9, 0.95, 0.99]:
+            ax.axhline(y=percentile, color='gray', linestyle=':', alpha=0.3, linewidth=1)
+    
+    # Hide any unused subplots
+    for idx in range(len(app_ops), len(axes)):
+        axes[idx].set_visible(False)
+    
+    # Add a single shared horizontal legend below all subplots
+    fig.legend(legend_handles, legend_labels, loc='lower center', fontsize=14, 
+               ncol=len(legend_labels), frameon=True, bbox_to_anchor=(0.5, -0.02),
+               prop={'weight': 'bold'})
+    
+    plt.tight_layout(rect=[0, 0.05, 1, 0.99])
+    
+    # Save as PDF (IEEE-compliant: 300 DPI, embedded fonts)
+    output_path_pdf = os.path.join(output_dir, f'all_apps_cdf_{metric.lower()}_N{batch_size}.pdf')
+    plt.savefig(output_path_pdf, format=IEEE_FMT, dpi=IEEE_DPI, bbox_inches='tight')
+    print(f"✅ Saved combined CDF plot with {len(app_ops)} subplots (300 DPI): {output_path_pdf}")
+    
+    plt.close()
+    
+    # Also create interactive HTML version using plotly subplots
+    from plotly.subplots import make_subplots
+    
+    fig_interactive = make_subplots(
+        rows=n_rows, cols=n_cols,
+        subplot_titles=[f'{get_display_name(app)}/{op}' for app, op in app_ops],
+        vertical_spacing=0.12 / n_rows if n_rows > 1 else 0.1,
+        horizontal_spacing=0.10 / n_cols if n_cols > 1 else 0.1
+    )
+    
+    # Add traces for each app/operation
+    for idx, (app_name, operation) in enumerate(app_ops):
+        row = idx // n_cols + 1
+        col = idx % n_cols + 1
+        
+        data_dict = app_data[app_name][operation][batch_size]
+        app_configs = sorted(data_dict.keys(), key=sort_key)
+        
+        for config in app_configs:
+            df = data_dict[config]
+            
+            if metric not in df.columns:
+                continue
+            
+            data = df[metric].values
+            sorted_data, cdf = calculate_cdf(data)
+            
+            # Create label
+            if config == 'ispc':
+                label = 'ISPC'
+            elif config.startswith('mt'):
+                parts = config.replace('mt', '').split('_')
+                threads = parts[0] if parts[0] else '?'
+                mode = parts[1] if len(parts) > 1 else ''
+                label = f'MT-{threads}({mode})' if mode else f'MT-{threads}'
+            else:
+                label = config
+            
+            # Only show legend for first subplot to avoid clutter
+            show_legend = (idx == 0)
+            
+            fig_interactive.add_trace(
+                go.Scatter(
+                    x=sorted_data,
+                    y=cdf,
+                    mode='lines',
+                    name=label,
+                    line=dict(width=2),
+                    legendgroup=config,  # Group by config for unified legend
+                    showlegend=show_legend,
+                    hovertemplate=f'<b>{label}</b><br>{metric}: %{{x:.0f}} cycles<br>CDF: %{{y:.2%}}<extra></extra>'
+                ),
+                row=row, col=col
+            )
+        
+        # Add percentile lines
+        for percentile in [0.5, 0.9, 0.95, 0.99]:
+            fig_interactive.add_hline(
+                y=percentile,
+                line_dash="dot",
+                line_color="gray",
+                opacity=0.3,
+                row=row, col=col
+            )
+    
+    # Update layout
+    fig_interactive.update_xaxes(title_text=f'{metric} (cycles)', row=n_rows)
+    fig_interactive.update_yaxes(title_text='CDF')
+    
+    fig_interactive.update_layout(
+        title_text=f'CDF Comparison Across All Applications and Operations for N={batch_size}<br>{metric}',
+        height=400 * n_rows,
+        width=500 * n_cols,
+        hovermode='closest',
+        template='plotly_white',
+        font=dict(size=10),
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01
+        )
+    )
+    
+    # Save interactive HTML version
+    output_path_html = os.path.join(output_dir, f'all_apps_cdf_{metric.lower()}_N{batch_size}.html')
+    fig_interactive.write_html(output_path_html)
+    print(f"✅ Saved interactive combined CDF plot: {output_path_html}")
 
 def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', output_dir='.'):
     """
@@ -1083,13 +1424,12 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
         for operation in sorted(operation_data.keys()):
             config_data = operation_data[operation]
             
-            # Look for mt1_spawn as baseline
-            baseline_config = 'mt1_spawn'
-            if baseline_config not in config_data:
-                print(f"⚠️  Warning: Baseline '{baseline_config}' not found for {app_name}/{operation}, skipping")
+            # Look for baseline configuration
+            if BASELINE_CONFIG not in config_data:
+                print(f"⚠️  Warning: Baseline '{BASELINE_CONFIG}' not found for {app_name}/{operation}, skipping")
                 continue
             
-            baseline_df = config_data[baseline_config]
+            baseline_df = config_data[BASELINE_CONFIG]
             
             if metric not in baseline_df.columns:
                 print(f"⚠️  Warning: Metric '{metric}' not found in baseline for {app_name}/{operation}")
@@ -1134,21 +1474,24 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
     configs = sorted(all_configs, key=sort_key)
     
     # Create bar chart - make it wider to accommodate more groups
-    fig, ax = plt.subplots(figsize=(max(16, len(app_ops) * 1.5), 8))
+    fig, ax = plt.subplots(figsize=(max(16, len(app_ops) * 1.5), 4.5))
     
     # Bar width and positions
-    bar_width = 0.15
+    bar_width = 0.30
     num_configs = len(configs)
     
-    # Generate colors
-    colors = plt.cm.tab10(np.linspace(0, 1, num_configs))
+    # Get consistent color map
+    color_map = get_config_color_map()
     
     # X positions for each app+operation group with spacing between them
-    spacing_factor = 2.5  # Increase this for more spacing
+    spacing_factor = 2.3  # Increase spacing to prevent label overlap
     x_pos = np.arange(len(app_ops)) * spacing_factor
     
-    # Plot bars for each configuration
-    for config_idx, config in enumerate(configs):
+    # Plot bars for each configuration (skip baseline)
+    configs_to_plot = [c for c in configs if c != BASELINE_CONFIG]
+    num_configs_to_plot = len(configs_to_plot)
+    
+    for config_idx, config in enumerate(configs_to_plot):
         normalized_values = []
         for app_op in app_ops:
             if config in normalized_energy_data[app_op]:
@@ -1163,33 +1506,37 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
             parts = config.replace('mt', '').split('_')
             threads = parts[0] if parts[0] else '?'
             mode = parts[1] if len(parts) > 1 else ''
-            # Highlight baseline
-            if config == 'mt1_spawn':
-                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
-            else:
-                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+            label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
         else:
             label = config
         
         # Position offset for this configuration
-        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        offset = (config_idx - num_configs_to_plot/2 + 0.5) * bar_width
         
         ax.bar(x_pos + offset, normalized_values, bar_width, 
-               label=label, color=colors[config_idx], alpha=0.8)
+               label=label, color=get_config_color(config, color_map), alpha=0.8,
+               edgecolor='black', linewidth=0.8)
     
     # Add horizontal line at 1.0x (baseline)
     ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Baseline (1.0x)')
     
     # Formatting
     ax.set_xlabel('Application / Operation', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Normalized Energy (relative to baseline)', fontsize=14, fontweight='bold')
-    ax.set_title(f'Normalized Energy Comparison Across Applications and Operations\n{metric} (Lower is Better)', 
-                 fontsize=16, fontweight='bold')
+    ax.set_ylabel('Normalized Energy', fontsize=14, fontweight='bold')
     ax.set_xticks(x_pos)
-    # Create labels like "post/create", "post/lookup", etc.
-    x_labels = [f'{app}/{op}' for app, op in app_ops]
-    ax.set_xticklabels(x_labels, fontsize=11, rotation=45, ha='right')
-    ax.legend(fontsize=10, loc='upper left', ncol=2)
+    # Create labels with app name and operation on different lines
+    x_labels = [f'{get_display_name(app)}\n{op}' for app, op in app_ops]
+    ax.set_xticklabels(x_labels, fontsize=11, rotation=0, ha='center', fontweight='bold')
+    legend = ax.legend(fontsize=10, loc='upper left', ncol=2)
+    
+    # Make tick labels bold
+    for label in ax.get_yticklabels():
+        label.set_fontweight('bold')
+    
+    # Make legend text bold
+    for text in legend.get_texts():
+        text.set_fontweight('bold')
+    
     ax.grid(True, alpha=0.3, linestyle='--', axis='y')
     
     # Set y-axis to start at 0
@@ -1197,18 +1544,18 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
     
     plt.tight_layout()
     
-    # Save plot
+    # Save plot (IEEE-compliant: 300 DPI, embedded fonts)
     output_path_pdf = os.path.join(output_dir, f'normalized_energy_grouped_by_app_{metric.lower()}.pdf')
-    plt.savefig(output_path_pdf, bbox_inches='tight')
-    print(f"✅ Saved normalized energy plot: {output_path_pdf}")
+    plt.savefig(output_path_pdf, format=IEEE_FMT, dpi=IEEE_DPI, bbox_inches='tight')
+    print(f"✅ Saved IEEE-compliant normalized energy plot (300 DPI): {output_path_pdf}")
     
     plt.close()
     
     # Also create interactive HTML version
     fig_interactive = go.Figure()
     
-    # Plot bars for each configuration
-    for config_idx, config in enumerate(configs):
+    # Plot bars for each configuration (skip baseline)
+    for config_idx, config in enumerate(configs_to_plot):
         normalized_values = []
         hover_texts = []
         for app_op in app_ops:
@@ -1216,10 +1563,10 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
             if config in normalized_energy_data[app_op]:
                 normalized = normalized_energy_data[app_op][config]
                 normalized_values.append(normalized)
-                hover_texts.append(f'{app}/{operation}<br>Config: {config}<br>Normalized Energy: {normalized:.3f}x')
+                hover_texts.append(f'{get_display_name(app)}/{operation}<br>Config: {config}<br>Normalized Energy: {normalized:.3f}x')
             else:
                 normalized_values.append(0)
-                hover_texts.append(f'{app}/{operation}<br>No data')
+                hover_texts.append(f'{get_display_name(app)}/{operation}<br>No data')
         
         # Create label
         if config == 'ispc':
@@ -1228,15 +1575,12 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
             parts = config.replace('mt', '').split('_')
             threads = parts[0] if parts[0] else '?'
             mode = parts[1] if len(parts) > 1 else ''
-            if config == 'mt1_spawn':
-                label = f'MT-{threads} ({mode}) [baseline]' if mode else f'MT-{threads} [baseline]'
-            else:
-                label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
+            label = f'MT-{threads} ({mode})' if mode else f'MT-{threads}'
         else:
             label = config
         
         # Position offset for this configuration
-        offset = (config_idx - num_configs/2 + 0.5) * bar_width
+        offset = (config_idx - num_configs_to_plot/2 + 0.5) * bar_width
         x_positions = x_pos + offset
         
         fig_interactive.add_trace(go.Bar(
@@ -1262,7 +1606,7 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
     )
     
     # Update layout
-    x_labels = [f'{app}/{op}' for app, op in app_ops]
+    x_labels = [f'{get_display_name(app)}/{op}' for app, op in app_ops]
     fig_interactive.update_layout(
         title=f'Normalized Energy Comparison Across Applications and Operations<br>{metric} (Lower is Better)',
         xaxis=dict(
@@ -1273,7 +1617,7 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
             tickangle=45
         ),
         yaxis=dict(
-            title='Normalized Energy (relative to baseline)',
+            title='Normalized Energy',
             rangemode='tozero'
         ),
         barmode='group',
@@ -1322,7 +1666,7 @@ def plot_normalized_energy_grouped_by_app(energy_data, metric='TotalPackage_J', 
             else:
                 label = config
             
-            app_op_label = f'{app}/{operation}'
+            app_op_label = f'{get_display_name(app)}/{operation}'
             print(f"{app_op_label:<25} {label:<20} {normalized:>12.3f}x {absolute_energy:>15.6f}")
         print(f"{'-'*55}")
     
@@ -1507,6 +1851,37 @@ def generate_index_html(output_dir, app_data, batch_sizes):
             📊 Batch Size: N={batch_size}
         </div>
         
+        <h3>📊 Combined CDF Plots (All Apps/Operations)</h3>
+        <div class="plot-grid">
+            <div class="plot-card speedup-card">
+                <div class="icon">📊</div>
+                <a href="all_apps_cdf_totallatency_N{batch_size}.html" target="_blank">
+                    All Apps CDF - Total Latency
+                </a>
+                <div class="description">
+                    Interactive subplots showing CDF of Total Latency for all applications and operations in one view
+                </div>
+            </div>
+            <div class="plot-card speedup-card">
+                <div class="icon">⚡</div>
+                <a href="all_apps_cdf_executiontime_N{batch_size}.html" target="_blank">
+                    All Apps CDF - Execution Time
+                </a>
+                <div class="description">
+                    Interactive subplots showing CDF of Execution Time for all applications and operations in one view
+                </div>
+            </div>
+            <div class="plot-card speedup-card">
+                <div class="icon">⏱️</div>
+                <a href="all_apps_cdf_queueingdelay_N{batch_size}.html" target="_blank">
+                    All Apps CDF - Queueing Delay
+                </a>
+                <div class="description">
+                    Interactive subplots showing CDF of Queueing Delay for all applications and operations in one view
+                </div>
+            </div>
+        </div>
+        
         <h3>⚡ Speedup, Throughput & Energy Comparison</h3>
         <div class="plot-grid">
             <div class="plot-card speedup-card">
@@ -1549,10 +1924,11 @@ def generate_index_html(output_dir, app_data, batch_sizes):
         for app_name in sorted(batch_size_info[batch_size].keys()):
             operations = batch_size_info[batch_size][app_name]
             app_icon = app_icons.get(app_name, '📊')
+            display_name = get_display_name(app_name)
             
             html_content += f"""
         <div class="app-group">
-            <div class="app-title">{app_icon} {app_name.title()} Service</div>
+            <div class="app-title">{app_icon} {display_name}</div>
             <div class="plot-grid">
 """
             
@@ -1562,8 +1938,8 @@ def generate_index_html(output_dir, app_data, batch_sizes):
                 
                 html_content += f"""                <div class="plot-card">
                     <div class="icon">{op_icon}</div>
-                    <a href="{filename}" target="_blank">{app_name.title()} {operation.title()}</a>
-                    <div class="description">CDF of TotalLatency for {app_name} {operation} operations (N={batch_size})</div>
+                    <a href="{filename}" target="_blank">{display_name} {operation.title()}</a>
+                    <div class="description">CDF of TotalLatency for {display_name} {operation} operations (N={batch_size})</div>
                 </div>
 """
             
@@ -1638,11 +2014,19 @@ def main():
     # Group files by app, operation, and batch size
     app_data = {}  # app_name -> operation -> batch_size -> config -> df
     
+    # Filter configurations: drop mt4_pool and all spawn variants
+    FILTER_CONFIGS = {'mt4_pool','mt1_pool' , 'mt4_spawn', 'mt8_pool', 'mt16_pool'}
+    
     for filepath in files:
         app_name, operation, config, batch_size, df = parse_timing_file(filepath)
         
         if app_name is None:
             print(f"⚠️  Skipping file (couldn't parse): {os.path.basename(filepath)}")
+            continue
+        
+        # Filter out unwanted configurations
+        if config in FILTER_CONFIGS:
+            print(f"  🚫 Filtered out {app_name}/{operation}/{config} for N={batch_size}")
             continue
         
         if app_name not in app_data:
@@ -1665,6 +2049,11 @@ def main():
         
         if app_name is None:
             print(f"⚠️  Skipping energy file (couldn't parse): {os.path.basename(filepath)}")
+            continue
+        
+        # Filter out unwanted configurations (same as timing data)
+        if config in FILTER_CONFIGS:
+            print(f"  🚫 Filtered out energy {app_name}/{operation}/{config}")
             continue
         
         if app_name not in energy_data:
@@ -1734,6 +2123,19 @@ def main():
         print(f"Generating throughput plot for N={batch_size}")
         print(f"{'-'*80}")
         plot_throughput_grouped_by_app(app_data, batch_size, 'TotalLatency', output_dir)
+    
+    # Generate combined CDF plots with all apps as subplots for each batch size
+    print(f"\n{'#'*80}")
+    print(f"# GENERATING COMBINED CDF PLOTS (ALL APPS AS SUBPLOTS)")
+    print(f"{'#'*80}")
+    
+    for batch_size in sorted(all_batch_sizes):
+        print(f"\n{'-'*80}")
+        print(f"Generating combined CDF plot for N={batch_size}")
+        print(f"{'-'*80}")
+        plot_all_apps_cdf_subplots(app_data, batch_size, 'TotalLatency', output_dir)
+        plot_all_apps_cdf_subplots(app_data, batch_size, 'ExecutionTime', output_dir)
+        plot_all_apps_cdf_subplots(app_data, batch_size, 'QueueingDelay', output_dir)
     
     # Generate normalized energy plots if energy data is available
     if energy_data:

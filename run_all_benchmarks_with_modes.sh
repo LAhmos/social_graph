@@ -15,7 +15,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-ITERATIONS=100
+ITERATIONS=1000
 RESULTS_DIR="benchmark_results_$(date +%Y%m%d_%H%M%S)"
 THREAD_COUNTS=(1 4 8 16)
 MT_MODES=("pool" "spawn")  # Test both threadpool and spawn modes

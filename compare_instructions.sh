@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to compare instruction counts between ISPC and MT implementations
-# Uses perf stat to collect hardware performance counters
+# Uses Intel Pin with modified insmix tool to get scalar/SIMD breakdown
 
 set -e  # Exit on error
 
@@ -21,26 +21,33 @@ THREAD_COUNTS=(1 4 8 16)
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║  Instruction Count Comparison: ISPC vs MT                        ║${NC}"
 echo -e "${BLUE}╠══════════════════════════════════════════════════════════════════╣${NC}"
-echo -e "${BLUE}║  Using perf stat to measure instruction counts                   ║${NC}"
+echo -e "${BLUE}║  Using Intel Pin with insmix for scalar/SIMD breakdown           ║${NC}"
 echo -e "${BLUE}║  Iterations: ${ITERATIONS}                                              ║${NC}"
 echo -e "${BLUE}║  Thread counts: 1, 4, 8, 16                                      ║${NC}"
 echo -e "${BLUE}║  Results dir: ${RESULTS_DIR}                        ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check if perf is available and find the correct binary
-PERF_CMD=""
-if command -v perf &> /dev/null && perf --version &> /dev/null; then
-    PERF_CMD="perf"
-elif [ -f "/usr/lib/linux-tools/6.8.0-87-generic/perf" ]; then
-    PERF_CMD="/usr/lib/linux-tools/6.8.0-87-generic/perf"
-else
-    echo -e "${RED}Error: perf command not found. Please install linux-tools package.${NC}"
-    echo "Run: sudo apt-get install linux-tools-generic"
+# Check if Pin and insmix are available
+PIN_ROOT="/home/aalawneh/energy/pin-external-4.0-99633-g5ca9893f2-gcc-linux"
+PIN_CMD="${PIN_ROOT}/pin"
+INSMIX_TOOL="${PIN_ROOT}/source/tools/Insmix/obj-intel64/insmix.so"
+
+if [ ! -f "${PIN_CMD}" ]; then
+    echo -e "${RED}Error: Pin not found at ${PIN_CMD}${NC}"
     exit 1
 fi
 
-echo "Using perf: ${PERF_CMD}"
+if [ ! -f "${INSMIX_TOOL}" ]; then
+    echo -e "${RED}Error: insmix tool not found at ${INSMIX_TOOL}${NC}"
+    echo "Building insmix tool..."
+    cd "${PIN_ROOT}/source/tools/Insmix"
+    make
+    cd - > /dev/null
+fi
+
+echo "Using Pin: ${PIN_CMD}"
+echo "Using insmix: ${INSMIX_TOOL}"
 
 # Get absolute path of current directory
 BASE_DIR="$(pwd)"
@@ -50,10 +57,10 @@ mkdir -p "${BASE_DIR}/${RESULTS_DIR}"
 
 # Summary file
 SUMMARY_FILE="${BASE_DIR}/${RESULTS_DIR}/instruction_comparison.csv"
-echo "Service,Operation,Mode,Threads,Instructions,Cycles,IPC,Time_us" > "${SUMMARY_FILE}"
+echo "Service,Operation,Mode,Threads,Total_Instructions,Scalar_Instructions,SIMD_Instructions,Scalar_Percent,SIMD_Percent,Time_us" > "${SUMMARY_FILE}"
 
-# Function to run benchmark with perf and extract instruction count
-run_with_perf() {
+# Function to run benchmark with Pin insmix and extract instruction breakdown
+run_with_pin() {
     local service=$1
     local operation=$2
     local mode=$3
@@ -62,14 +69,6 @@ run_with_perf() {
     
     local service_dir="${service}"
     local executable="simple"
-    
-    # Build mode string for command
-    local mode_str=""
-    if [[ "$mode" == "ispc" ]]; then
-        mode_str="ispc"
-    else
-        mode_str="mt ${threads}"
-    fi
     
     # Build result file prefix with absolute path
     local result_prefix="${BASE_DIR}/${RESULTS_DIR}/${service}_${operation}_${mode}"
@@ -86,82 +85,86 @@ run_with_perf() {
     # Change to service directory
     cd "${service_dir}"
     
-    # Build command based on service
+    # Build command based on service - matching run_all_benchmarks_with_modes.sh exactly
     local cmd=""
+    local full_path_exe="${BASE_DIR}/${service_dir}/${executable}"
+    
     if [[ "$service" == "user" ]]; then
         if [[ "$mode" == "ispc" ]]; then
-            cmd="./${executable} ispc ${operation} ${batch_size} 0.0 ${ITERATIONS}"
+            cmd="${full_path_exe} ispc ${operation} ${batch_size} 0.0 ${ITERATIONS}"
         else
-            cmd="./${executable} mt ${threads} ${operation} pool ${batch_size} 0.0 ${ITERATIONS}"
+            cmd="${full_path_exe} mt ${threads} ${operation} spawn ${batch_size} 0.0 ${ITERATIONS}"
         fi
     elif [[ "$service" == "post" ]]; then
         if [[ "$mode" == "ispc" ]]; then
-            cmd="./${executable} ispc ${operation} ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} ispc ${operation} ${batch_size} ${ITERATIONS}"
         else
-            cmd="./${executable} mt ${threads} ${operation} pool ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} mt ${threads} ${operation} spawn ${batch_size} ${ITERATIONS}"
         fi
     elif [[ "$service" == "userTag" ]]; then
         if [[ "$mode" == "ispc" ]]; then
-            cmd="./${executable} ispc ${operation} ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} ispc ${operation} ${batch_size} ${ITERATIONS}"
         else
-            cmd="./${executable} mt ${threads} ${operation} pool ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} mt ${threads} ${operation} spawn ${batch_size} ${ITERATIONS}"
         fi
     elif [[ "$service" == "text" ]]; then
-        # Text service needs CSV file
+        # Text service needs text file with different argument order
         if [[ "$mode" == "ispc" ]]; then
-            cmd="./${executable} test_texts.csv 100 ${ITERATIONS}"
+            cmd="${full_path_exe} /home/aalawneh/energy/socialGraph/text/test.txt ${batch_size} ${ITERATIONS}"
         else
-            cmd="./${executable} test_texts.csv 100 mt ${threads} pool ${ITERATIONS}"
+            cmd="${full_path_exe} /home/aalawneh/energy/socialGraph/text/test.txt ${batch_size} mt ${threads} spawn ${ITERATIONS}"
         fi
     elif [[ "$service" == "uniqueID" || "$service" == "shortURL" ]]; then
         # uniqueID and shortURL don't have operation types
         if [[ "$mode" == "ispc" ]]; then
-            cmd="./${executable} ispc ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} ispc ${batch_size} ${ITERATIONS}"
         else
-            cmd="./${executable} mt ${threads} pool ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} mt ${threads} spawn ${batch_size} ${ITERATIONS}"
         fi
     fi
     
     echo "  Command: ${cmd}"
     
-    # Run with perf stat to collect instruction counts
-    local perf_output="${result_prefix}_perf.txt"
+    # Output files
+    local insmix_output="${result_prefix}_insmix.out"
+    local bblcnt_output="${result_prefix}_bblcnt.out"
     local app_output="${result_prefix}_output.txt"
     
-    # Run perf stat with detailed events
-    if ${PERF_CMD} stat -e instructions,cycles,cache-references,cache-misses \
-        -o "${perf_output}" \
-        ${cmd} > "${app_output}" 2>&1; then
+    # Run with Pin insmix tool
+    local start_time=$(date +%s%N)
+    if ${PIN_CMD} -t ${INSMIX_TOOL} -o "${insmix_output}" -o2 "${bblcnt_output}" -- ${cmd} > "${app_output}" 2>&1; then
+        local end_time=$(date +%s%N)
+        local elapsed_us=$(( ($end_time - $start_time) / 1000 ))
         
         echo -e "  ${GREEN}✓ Success${NC}"
         
-        # Extract metrics from perf output
-        local instructions=$(grep "instructions" "${perf_output}" | grep -v "<not counted>" | head -1 | awk '{print $1}' | tr -d ',')
-        local cycles=$(grep "cycles" "${perf_output}" | grep -v "<not counted>" | head -1 | awk '{print $1}' | tr -d ',')
-        local time_sec=$(grep "seconds time elapsed" "${perf_output}" | awk '{print $1}')
+        # Extract scalar and SIMD instruction counts from insmix output
+        local total_insts=$(tail -20 "${insmix_output}" | grep '^\s*3000 \*total' | awk '{print $3}')
+        local scalar_insts=$(tail -20 "${insmix_output}" | grep '^\s*4046 \*scalar' | awk '{print $3}')
+        local simd_insts=$(tail -20 "${insmix_output}" | grep '^\s*4047 \*simd' | awk '{print $3}')
         
-        # Calculate IPC (Instructions Per Cycle)
-        local ipc="0"
-        if [[ -n "$cycles" && "$cycles" != "0" && -n "$instructions" ]]; then
-            ipc=$(echo "scale=4; ${instructions} / ${cycles}" | bc -l)
+        # Calculate percentages
+        local scalar_pct="0.00"
+        local simd_pct="0.00"
+        if [[ -n "$total_insts" && "$total_insts" != "0" ]]; then
+            if [[ -n "$scalar_insts" ]]; then
+                scalar_pct=$(echo "scale=2; (${scalar_insts} / ${total_insts}) * 100" | bc -l)
+            fi
+            if [[ -n "$simd_insts" ]]; then
+                simd_pct=$(echo "scale=2; (${simd_insts} / ${total_insts}) * 100" | bc -l)
+            fi
         fi
         
-        # Convert time to microseconds
-        local time_us="0"
-        if [[ -n "$time_sec" ]]; then
-            time_us=$(echo "scale=2; ${time_sec} * 1000000" | bc -l)
-        fi
-        
-        # Also try to get median time from application output
+        # Try to get median time from application output
         local app_time=$(grep "Median:" "${app_output}" | head -1 | awk '{print $2}' | tr -d 'µs')
         if [[ -n "$app_time" && "$app_time" != "0" ]]; then
-            time_us=$app_time
+            elapsed_us=$app_time
         fi
         
-        echo "  Instructions: ${instructions}"
-        echo "  Cycles: ${cycles}"
-        echo "  IPC: ${ipc}"
-        echo "  Time: ${time_us} µs"
+        echo "  Total Instructions:  ${total_insts}"
+        echo "  Scalar Instructions: ${scalar_insts} (${scalar_pct}%)"
+        echo "  SIMD Instructions:   ${simd_insts} (${simd_pct}%)"
+        echo "  Time: ${elapsed_us} µs"
         
         # Add to summary
         local thread_str="${threads}"
@@ -169,10 +172,10 @@ run_with_perf() {
             thread_str="N/A"
         fi
         
-        echo "${service},${operation},${mode},${thread_str},${instructions},${cycles},${ipc},${time_us}" >> "${SUMMARY_FILE}"
+        echo "${service},${operation},${mode},${thread_str},${total_insts},${scalar_insts},${simd_insts},${scalar_pct},${simd_pct},${elapsed_us}" >> "${SUMMARY_FILE}"
         
     else
-        echo -e "  ${RED}✗ Failed - check ${perf_output} and ${app_output}${NC}"
+        echo -e "  ${RED}✗ Failed - check ${insmix_output} and ${app_output}${NC}"
     fi
     
     cd - > /dev/null
@@ -187,22 +190,34 @@ generate_comparison_report() {
     echo -e "${CYAN}Generating comparison for ${service} - ${operation}${NC}"
     
     # Get ISPC baseline
-    local ispc_insts=$(grep "^${service},${operation},ispc," "${SUMMARY_FILE}" | cut -d',' -f5)
+    local ispc_line=$(grep "^${service},${operation},ispc," "${SUMMARY_FILE}")
     
-    if [[ -z "$ispc_insts" || "$ispc_insts" == "0" ]]; then
+    if [[ -z "$ispc_line" ]]; then
         echo -e "  ${RED}Warning: No ISPC data found${NC}"
         return
     fi
     
-    echo "  ISPC instructions: ${ispc_insts}"
+    local ispc_total=$(echo "$ispc_line" | cut -d',' -f5)
+    local ispc_scalar=$(echo "$ispc_line" | cut -d',' -f6)
+    local ispc_simd=$(echo "$ispc_line" | cut -d',' -f7)
+    local ispc_simd_pct=$(echo "$ispc_line" | cut -d',' -f9)
+    
+    echo "  ISPC: ${ispc_total} total (${ispc_scalar} scalar, ${ispc_simd} SIMD = ${ispc_simd_pct}%)"
     
     # Compare with each MT configuration
     for threads in "${THREAD_COUNTS[@]}"; do
-        local mt_insts=$(grep "^${service},${operation},mt,${threads}," "${SUMMARY_FILE}" | cut -d',' -f5)
+        local mt_line=$(grep "^${service},${operation},mt,${threads}," "${SUMMARY_FILE}")
         
-        if [[ -n "$mt_insts" && "$mt_insts" != "0" ]]; then
-            local ratio=$(echo "scale=2; ${mt_insts} / ${ispc_insts}" | bc -l)
-            echo "  MT${threads} instructions: ${mt_insts} (${ratio}x vs ISPC)"
+        if [[ -n "$mt_line" ]]; then
+            local mt_total=$(echo "$mt_line" | cut -d',' -f5)
+            local mt_scalar=$(echo "$mt_line" | cut -d',' -f6)
+            local mt_simd=$(echo "$mt_line" | cut -d',' -f7)
+            local mt_simd_pct=$(echo "$mt_line" | cut -d',' -f9)
+            
+            if [[ -n "$mt_total" && "$mt_total" != "0" && "$ispc_total" != "0" ]]; then
+                local ratio=$(echo "scale=2; ${mt_total} / ${ispc_total}" | bc -l)
+                echo "  MT${threads}: ${mt_total} total (${mt_scalar} scalar, ${mt_simd} SIMD = ${mt_simd_pct}%) - ${ratio}x vs ISPC"
+            fi
         fi
     done
     
@@ -237,16 +252,16 @@ echo -e "${BLUE}  POST SERVICE${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # Post - Create
-run_with_perf "post" "create" "ispc" "" ${POST_BATCH_CREATE}
+run_with_pin "post" "create" "ispc" "" ${POST_BATCH_CREATE}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "post" "create" "mt" ${threads} ${POST_BATCH_CREATE}
+    run_with_pin "post" "create" "mt" ${threads} ${POST_BATCH_CREATE}
 done
 generate_comparison_report "post" "create"
 
 # Post - Lookup
-run_with_perf "post" "lookup" "ispc" "" ${POST_BATCH_LOOKUP}
+run_with_pin "post" "lookup" "ispc" "" ${POST_BATCH_LOOKUP}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "post" "lookup" "mt" ${threads} ${POST_BATCH_LOOKUP}
+    run_with_pin "post" "lookup" "mt" ${threads} ${POST_BATCH_LOOKUP}
 done
 generate_comparison_report "post" "lookup"
 
@@ -258,16 +273,16 @@ echo -e "${BLUE}  USER SERVICE${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # User - Create
-run_with_perf "user" "create" "ispc" "" ${USER_BATCH_CREATE}
+run_with_pin "user" "create" "ispc" "" ${USER_BATCH_CREATE}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "user" "create" "mt" ${threads} ${USER_BATCH_CREATE}
+    run_with_pin "user" "create" "mt" ${threads} ${USER_BATCH_CREATE}
 done
 generate_comparison_report "user" "create"
 
 # User - Login
-run_with_perf "user" "login" "ispc" "" ${USER_BATCH_LOGIN}
+run_with_pin "user" "login" "ispc" "" ${USER_BATCH_LOGIN}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "user" "login" "mt" ${threads} ${USER_BATCH_LOGIN}
+    run_with_pin "user" "login" "mt" ${threads} ${USER_BATCH_LOGIN}
 done
 generate_comparison_report "user" "login"
 
@@ -279,16 +294,16 @@ echo -e "${BLUE}  USERTAG SERVICE${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # UserTag - Insert
-run_with_perf "userTag" "insert" "ispc" "" ${USERTAG_BATCH_INSERT}
+run_with_pin "userTag" "insert" "ispc" "" ${USERTAG_BATCH_INSERT}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "userTag" "insert" "mt" ${threads} ${USERTAG_BATCH_INSERT}
+    run_with_pin "userTag" "insert" "mt" ${threads} ${USERTAG_BATCH_INSERT}
 done
 generate_comparison_report "userTag" "insert"
 
 # UserTag - Lookup
-run_with_perf "userTag" "lookup" "ispc" "" ${USERTAG_BATCH_LOOKUP}
+run_with_pin "userTag" "lookup" "ispc" "" ${USERTAG_BATCH_LOOKUP}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "userTag" "lookup" "mt" ${threads} ${USERTAG_BATCH_LOOKUP}
+    run_with_pin "userTag" "lookup" "mt" ${threads} ${USERTAG_BATCH_LOOKUP}
 done
 generate_comparison_report "userTag" "lookup"
 
@@ -299,9 +314,9 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}  SHORTURL SERVICE${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-run_with_perf "shortURL" "compose" "ispc" "" ${SHORTURL_BATCH}
+run_with_pin "shortURL" "compose" "ispc" "" ${SHORTURL_BATCH}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "shortURL" "compose" "mt" ${threads} ${SHORTURL_BATCH}
+    run_with_pin "shortURL" "compose" "mt" ${threads} ${SHORTURL_BATCH}
 done
 generate_comparison_report "shortURL" "compose"
 
@@ -312,9 +327,9 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}  TEXT SERVICE${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-run_with_perf "text" "compose" "ispc" "" ${TEXT_BATCH}
+run_with_pin "text" "compose" "ispc" "" ${TEXT_BATCH}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "text" "compose" "mt" ${threads} ${TEXT_BATCH}
+    run_with_pin "text" "compose" "mt" ${threads} ${TEXT_BATCH}
 done
 generate_comparison_report "text" "compose"
 
@@ -325,9 +340,9 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}  UNIQUEID SERVICE${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-run_with_perf "uniqueID" "compose" "ispc" "" ${UNIQUEID_BATCH}
+run_with_pin "uniqueID" "compose" "ispc" "" ${UNIQUEID_BATCH}
 for threads in "${THREAD_COUNTS[@]}"; do
-    run_with_perf "uniqueID" "compose" "mt" ${threads} ${UNIQUEID_BATCH}
+    run_with_pin "uniqueID" "compose" "mt" ${threads} ${UNIQUEID_BATCH}
 done
 generate_comparison_report "uniqueID" "compose"
 
@@ -343,14 +358,15 @@ REPORT_FILE="${BASE_DIR}/${RESULTS_DIR}/INSTRUCTION_COMPARISON_REPORT.txt"
 
 cat > "${REPORT_FILE}" << EOF
 ╔══════════════════════════════════════════════════════════════════╗
-║     Instruction Count Comparison: ISPC vs MT                     ║
+║   Instruction Count Comparison: ISPC vs MT (Scalar/SIMD)        ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 Generated: $(date)
 Iterations per test: ${ITERATIONS}
 Thread counts tested: ${THREAD_COUNTS[@]}
 
-All measurements collected using perf stat hardware performance counters.
+All measurements collected using Intel Pin with modified insmix tool.
+Provides detailed scalar vs SIMD instruction breakdown.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -360,14 +376,14 @@ EOF
 
 # Process and format results
 echo "" >> "${REPORT_FILE}"
-echo "Service            Operation    Mode   Threads  Instructions        Cycles          IPC     Time(µs)" >> "${REPORT_FILE}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "${REPORT_FILE}"
+echo "Service            Operation    Mode   Threads  Total_Insts     Scalar_Insts    SIMD_Insts   SIMD%    Time(µs)" >> "${REPORT_FILE}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "${REPORT_FILE}"
 
-while IFS=',' read -r service operation mode threads instructions cycles ipc time_us; do
+while IFS=',' read -r service operation mode threads total_insts scalar_insts simd_insts scalar_pct simd_pct time_us; do
     if [[ "$service" == "Service" ]]; then continue; fi
     
-    printf "%-18s %-12s %-6s %-8s %15s %15s %8s %12s\n" \
-        "$service" "$operation" "$mode" "$threads" "$instructions" "$cycles" "$ipc" "$time_us" >> "${REPORT_FILE}"
+    printf "%-18s %-12s %-6s %-8s %15s %15s %14s %8s %12s\n" \
+        "$service" "$operation" "$mode" "$threads" "$total_insts" "$scalar_insts" "$simd_insts" "$simd_pct" "$time_us" >> "${REPORT_FILE}"
 done < "${SUMMARY_FILE}"
 
 echo "" >> "${REPORT_FILE}"
@@ -385,18 +401,25 @@ for service_dir in post user userTag shortURL text uniqueID; do
             continue
         fi
         
-        ispc_insts=$(echo "$ispc_line" | cut -d',' -f5)
+        ispc_total=$(echo "$ispc_line" | cut -d',' -f5)
+        ispc_scalar=$(echo "$ispc_line" | cut -d',' -f6)
+        ispc_simd=$(echo "$ispc_line" | cut -d',' -f7)
+        ispc_simd_pct=$(echo "$ispc_line" | cut -d',' -f9)
         
         echo "${service_dir} - ${operation}:" >> "${REPORT_FILE}"
-        echo "  ISPC baseline: ${ispc_insts} instructions" >> "${REPORT_FILE}"
+        echo "  ISPC: Total=${ispc_total}, Scalar=${ispc_scalar}, SIMD=${ispc_simd} (${ispc_simd_pct}%)" >> "${REPORT_FILE}"
         
         for threads in "${THREAD_COUNTS[@]}"; do
             mt_line=$(grep "^${service_dir},${operation},mt,${threads}," "${SUMMARY_FILE}" 2>/dev/null || echo "")
             if [[ -n "$mt_line" ]]; then
-                mt_insts=$(echo "$mt_line" | cut -d',' -f5)
-                if [[ -n "$mt_insts" && "$mt_insts" != "0" && "$ispc_insts" != "0" ]]; then
-                    ratio=$(echo "scale=3; ${mt_insts} / ${ispc_insts}" | bc -l)
-                    echo "  MT${threads}: ${mt_insts} instructions (${ratio}x ISPC)" >> "${REPORT_FILE}"
+                mt_total=$(echo "$mt_line" | cut -d',' -f5)
+                mt_scalar=$(echo "$mt_line" | cut -d',' -f6)
+                mt_simd=$(echo "$mt_line" | cut -d',' -f7)
+                mt_simd_pct=$(echo "$mt_line" | cut -d',' -f9)
+                
+                if [[ -n "$mt_total" && "$mt_total" != "0" && "$ispc_total" != "0" ]]; then
+                    ratio=$(echo "scale=3; ${mt_total} / ${ispc_total}" | bc -l)
+                    echo "  MT${threads}: Total=${mt_total}, Scalar=${mt_scalar}, SIMD=${mt_simd} (${mt_simd_pct}%) - ${ratio}x vs ISPC" >> "${REPORT_FILE}"
                 fi
             fi
         done
@@ -420,8 +443,7 @@ echo -e "Summary CSV: ${CYAN}${SUMMARY_FILE}${NC}"
 echo -e "Report:      ${CYAN}${REPORT_FILE}${NC}"
 echo -e "Results:     ${CYAN}${BASE_DIR}/${RESULTS_DIR}/${NC}"
 echo ""
-echo -e "${YELLOW}NOTE: This script requires 'perf' tool and appropriate permissions.${NC}"
-echo -e "${YELLOW}If you see permission errors, you may need to:${NC}"
-echo -e "${YELLOW}  1. Run: sudo sysctl -w kernel.perf_event_paranoid=-1${NC}"
-echo -e "${YELLOW}  2. Or run this script with sudo${NC}"
+echo -e "${YELLOW}NOTE: This script uses Intel Pin for instrumentation.${NC}"
+echo -e "${YELLOW}Pin will slow down execution significantly (10-100x).${NC}"
+echo -e "${YELLOW}Results show scalar vs SIMD instruction breakdown.${NC}"
 echo ""
