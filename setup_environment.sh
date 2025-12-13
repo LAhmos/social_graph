@@ -95,15 +95,21 @@ plotly>=5.0.0
 kaleido>=0.2.1
 EOF
 
-echo "  Installing Python packages..."
-if command -v pip3 &> /dev/null; then
-    pip3 install -q -r requirements.txt
-    echo -e "${GREEN}✓ Python dependencies installed${NC}"
+# Create virtual environment
+VENV_DIR="venv"
+if [ -d "$VENV_DIR" ]; then
+    echo -e "${GREEN}✓ Virtual environment already exists${NC}"
 else
-    echo -e "${RED}✗ Error: pip3 not found. Please install pip3 first.${NC}"
-    echo "  On Ubuntu/Debian: sudo apt-get install python3-pip"
-    exit 1
+    echo "  Creating virtual environment..."
+    python3 -m venv "$VENV_DIR"
+    echo -e "${GREEN}✓ Virtual environment created${NC}"
 fi
+
+# Install packages in virtual environment
+echo "  Installing Python packages in virtual environment..."
+"$VENV_DIR/bin/pip" install -q --upgrade pip
+"$VENV_DIR/bin/pip" install -q -r requirements.txt
+echo -e "${GREEN}✓ Python dependencies installed${NC}"
 
 # ============================================
 # 3. Verify build tools
@@ -137,16 +143,23 @@ echo ""
 echo -e "${YELLOW}Setting up shell configuration...${NC}"
 
 # Create a source file for the environment
-cat > env_setup.sh << EOF
+cat > env_setup.sh << 'EOF'
 #!/bin/bash
 # Source this file to setup the socialGraph environment
 # Usage: source env_setup.sh
 
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
 # Add ISPC to PATH
-export PATH="$ISPC_BIN:\$PATH"
+export PATH="$SCRIPT_DIR/ispc-v1.28.2-linux/bin:$PATH"
+
+# Activate Python virtual environment
+source "$SCRIPT_DIR/venv/bin/activate"
 
 echo "SocialGraph environment activated"
-echo "ISPC: \$(which ispc)"
+echo "ISPC: $(which ispc)"
+echo "Python: $(which python)"
 EOF
 
 chmod +x env_setup.sh
@@ -165,8 +178,9 @@ echo "Next steps:"
 echo "  1. To activate the environment in your current shell:"
 echo -e "     ${GREEN}source env_setup.sh${NC}"
 echo ""
-echo "  2. To make it permanent, add this line to your ~/.bashrc:"
+echo "  2. To make it permanent, add these lines to your ~/.bashrc:"
 echo -e "     ${GREEN}export PATH=\"$ISPC_BIN:\$PATH\"${NC}"
+echo -e "     ${GREEN}source \"$SCRIPT_DIR/venv/bin/activate\"${NC}"
 echo ""
 echo "  3. Build and run benchmarks:"
 echo "     cd user && make && ./simple ispc create 100"
