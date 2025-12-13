@@ -77,7 +77,9 @@ def get_config_color(config, color_map=None, fallback_idx=0):
     else:
         # Generate a fallback color for unknown configs
         fallback_colors = plt.cm.Set3(np.linspace(0, 1, 12))
-        return fallback_colors[fallback_idx % len(fallback_colors)]
+        rgba = fallback_colors[fallback_idx % len(fallback_colors)]
+        # Convert RGBA array to hex string
+        return '#{:02x}{:02x}{:02x}'.format(int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
 
 def parse_energy_file(filepath):
     """Parse energy summary CSV file and extract configuration info and app name."""
