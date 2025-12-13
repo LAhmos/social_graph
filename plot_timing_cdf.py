@@ -1261,7 +1261,7 @@ def plot_all_apps_cdf_subplots(app_data, batch_size, metric='TotalLatency', outp
             
             # Plot CDF with consistent colors across subplots (no label on individual plots)
             line, = ax.plot(sorted_data, cdf, linewidth=2,
-                           color=color_map[config], alpha=0.8)
+                           color=get_config_color(config, color_map), alpha=0.8)
             
             # Collect handles and labels from first subplot for shared legend
             if not labels_added and idx == 0:
