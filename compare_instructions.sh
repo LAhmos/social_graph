@@ -17,7 +17,8 @@ NC='\033[0m' # No Color
 ITERATIONS=100
 RESULTS_DIR="instruction_comparison_$(date +%Y%m%d_%H%M%S)"
 THREAD_COUNTS=(1)
-FUNCTION_LIST="/home/aalawneh/energy/functions_to_track.txt"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FUNCTION_LIST="${SCRIPT_DIR}/functions_to_track.txt"
 PROFILER="${1:-both}"  # Options: pin, perf, both (default: both)
 
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════════╗${NC}"
@@ -37,7 +38,8 @@ USE_PIN=false
 USE_PERF=false
 
 if [[ "$PROFILER" == "pin" || "$PROFILER" == "both" ]]; then
-    PIN_ROOT="/home/aalawneh/energy/pin-external-4.0-99633-g5ca9893f2-gcc-linux"
+    WORK_DIR="$(dirname "${SCRIPT_DIR}")"
+    PIN_ROOT="${WORK_DIR}/pin-external-4.0-99633-g5ca9893f2-gcc-linux"
     PIN_CMD="${PIN_ROOT}/pin"
     INSMIX_TOOL="${PIN_ROOT}/source/tools/Insmix/obj-intel64/insmix.so"
     
@@ -161,10 +163,11 @@ run_with_profiler() {
         fi
     elif [[ "$service" == "text" ]]; then
         # Text service needs text file with different argument order
+        TEXT_FILE="${WORK_DIR}/socialGraph/text/test.txt"
         if [[ "$mode" == "ispc" ]]; then
-            cmd="${full_path_exe} /home/aalawneh/energy/socialGraph/text/test.txt ${batch_size} ${ITERATIONS}"
+            cmd="${full_path_exe} ${TEXT_FILE} ${batch_size} ${ITERATIONS}"
         else
-            cmd="${full_path_exe} /home/aalawneh/energy/socialGraph/text/test.txt ${batch_size} mt ${threads} spawn ${ITERATIONS}"
+            cmd="${full_path_exe} ${TEXT_FILE} ${batch_size} mt ${threads} spawn ${ITERATIONS}"
         fi
     elif [[ "$service" == "uniqueID" || "$service" == "shortURL" ]]; then
         # uniqueID and shortURL don't have operation types
