@@ -1,0 +1,99 @@
+# Top-level entry point functions for all Social Graph services
+# Inclusive mode will automatically discover and track all subfunctions called from these
+
+# ============================================
+# POST SERVICE
+# ============================================
+# ISPC kernels (actual C symbol names without namespace)
+newPost_batch
+getPostByUser_batch
+
+# Multithreaded C++ (main + worker functions)
+_ZN2mt13newPost_batchERNS_7PostMapEPKhiPKiS3_PliS6_S6_Rli
+_ZN2mt19ProcessNewPostRangeERNS_7PostMapEPKhiPKiS3_PliiS6_S6_l
+_ZN2mt19getPostByUser_batchERKNS_7PostMapEPKiiPhPiPlS7_Rli
+_ZN2mt19ProcessGetPostRangeERKNS_7PostMapEPKiiiPhPiPlS7_l
+
+# MT+ISPC hybrid (mangled names)
+_ZN2mt18newPost_batch_ispcERN4ispc7PostMapEPhiPKiPKPKhPliSA_SA_Rli
+_ZN2mt24getPostByUser_batch_ispcERKN4ispc7PostMapEPKiiPhPiPlS8_Rli
+
+# ============================================
+# USER SERVICE
+# ============================================
+# ISPC kernels
+login_batch
+login_batch_soa
+newUser_batch
+newUser_batch_soa
+
+# Multithreaded C++ (main + worker functions)
+_ZN2mt11login_batchERNS_7UserMapEPKhS3_iPiPlS5_Rli
+_ZN2mt17ProcessLoginRangeERNS_7UserMapEiiPKhS3_PiPlS5_l
+_ZN2mt13newUser_batchEiPKhiS1_S1_S1_S1_S1_PNS_4UserERNS_7UserMapEPlS6_Rli
+_ZN2mt19ProcessNewUserRangeEPKhiiiS1_S1_S1_S1_S1_PNS_4UserERNS_7UserMapEPlS6_l
+
+# MT+ISPC hybrid
+_ZN2mt16login_batch_ispcERN4ispc7UserMapEPKhS4_iPiPlS6_RlS5_i
+_ZN2mt18newUser_batch_ispcEPKhiS1_S1_S1_S1_S1_PN4ispc4UserERNS2_7UserMapEiPlS7_Rli
+
+# ============================================
+# USERTAG SERVICE
+# ============================================
+# ISPC kernels
+userMention_flat_batch
+getMentionNotifications_batch
+
+# Multithreaded C++ (main + worker functions)
+_ZN2mt22userMention_flat_batchERNS_15NotificationMapEPKhPKiS5_PKliPlS8_Rli
+_ZN2mt23ProcessUserMentionRangeERNS_15NotificationMapEPKhPKiS5_PKliiPlS8_l
+_ZN2mt29getMentionNotifications_batchERKNS_15NotificationMapEPKhiPliPiS5_S5_Rli
+_ZN2mt28ProcessGetNotificationsRangeERKNS_15NotificationMapEPKhiiPliPiS5_S5_l
+
+# MT+ISPC hybrid
+_ZN2mt27userMention_flat_batch_ispcEPKhPKiS3_PKlRN4ispc15NotificationMapEiPlS9_Rli
+_ZN2mt34getMentionNotifications_batch_ispcERKN4ispc15NotificationMapEPKhiPliPiS6_S6_Rli
+
+# ============================================
+# SHORTURL SERVICE
+# ============================================
+# ISPC kernels
+concat_batch
+concat_batch_range
+
+# Multithreaded C++ (main + worker functions)
+_ZN2mt12concat_batchERNS_6URLMapEPKhS3_PKiiPhPlS7_Rli
+_ZN2mt15ProcessUrlRangeERNS_6URLMapEPKhiS3_iiPhPlS5_l
+
+# MT+ISPC hybrid
+_ZN2mt17concat_batch_ispcERNS_6URLMapEPKhS3_PKiiPhPlS7_Rli
+
+# ============================================
+# TEXT SERVICE
+# ============================================
+# ISPC kernels
+processText_batch
+processText_batch_range
+
+# Multithreaded C++ (main + worker functions)
+_ZN2mt17processText_batchEPKhiPNS_10TextResultEPlS4_Rli
+_ZN2mt16ProcessTextRangeEPKhiiPNS_10TextResultEPlS4_l
+
+# MT+ISPC hybrid
+_ZN2mt22processText_batch_ispcEPKhiPiS2_PhS3_S3_S3_PlS4_Rli
+
+# ============================================
+# UNIQUEID SERVICE
+# ============================================
+# ISPC kernels (default uses Optimized version)
+UploadUniqueIdBatch_Optimized
+UploadUniqueIdBatch
+UploadUniqueIdBatch_Range
+UploadUniqueIdBatch_Hybrid
+
+# Multithreaded C++
+_ZN2mt19UploadUniqueIdBatchEPKhiiPA32_hPlS4_Rli
+_ZN2mt14ProcessIdRangeEPKhiiiPA32_hPlS4_l
+
+# MT+ISPC hybrid
+_ZN2mt24UploadUniqueIdBatch_ispcEPKhiiPA32_hPlS4_Rli

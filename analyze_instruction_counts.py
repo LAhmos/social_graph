@@ -90,12 +90,12 @@ def parse_insmix_output(filepath):
             metrics['total_instructions'] = int(matches[-1])
         
         # Extract scalar instructions (last match is the summary)
-        matches = re.findall(r'4046\s+\*scalar\s+(\d+)', content)
+        matches = re.findall(r'3001\s+\*scalar\s+(\d+)', content)
         if matches:
             metrics['scalar_instructions'] = int(matches[-1])
         
         # Extract SIMD instructions (last match is the summary)
-        matches = re.findall(r'4047\s+\*simd\s+(\d+)', content)
+        matches = re.findall(r'3002\s+\*simd\s+(\d+)', content)
         if matches:
             metrics['simd_instructions'] = int(matches[-1])
         
